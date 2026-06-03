@@ -40,7 +40,7 @@ async function request(path, { method = 'GET', body, headers } = {}) {
   }
 
   if (!res.ok) {
-    const msg = (data && data.error) || res.statusText || 'Request failed'
+    const msg = data?.error || res.statusText || 'Request failed'
     throw new ApiError(msg, res.status, data)
   }
   return data
@@ -56,11 +56,16 @@ export const api = {
 
   // Gigs
   nearbyGigs: (lat, lng, radius) =>
-    request(`/gigs/near?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}&radius=${encodeURIComponent(radius)}`),
+    request(
+      `/gigs/near?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}&radius=${encodeURIComponent(radius)}`,
+    ),
   gig: (id) => request(`/gigs/${id}`),
   myGigs: () => request('/gigs/mine'),
   createGig: (gig) => request('/gigs', { method: 'POST', body: gig }),
+  updateGig: (id, gig) => request(`/gigs/${id}`, { method: 'PUT', body: gig }),
+  deleteGig: (id) => request(`/gigs/${id}`, { method: 'DELETE' }),
   claimGig: (id) => request(`/gigs/${id}/claim`, { method: 'POST' }),
+  abandonGig: (id) => request(`/gigs/${id}/abandon`, { method: 'POST' }),
   completeGig: (id, rating, review) =>
     request(`/gigs/${id}/complete`, { method: 'POST', body: { rating, review } }),
 

@@ -1,8 +1,8 @@
 // The "+ Post" screen (single-screen gig creation) and the inspect+rate panel
 // shown on your own CLAIMED gigs. Everything routes through api.js.
 
-import { api, ApiError } from './api.js'
-import { h, clear, toast, money } from './ui.js'
+import { ApiError, api } from './api.js'
+import { clear, h, money, toast } from './ui.js'
 
 // Optional prefill when "Turn into a gig" comes from a board post.
 let pendingPrefill = null
@@ -63,8 +63,14 @@ export function renderPostForm(root) {
   const f = {
     task_type: field('Task', 'text', 'e.g. Rake leaves', prefill?.task_type),
     neighborhood: field('Neighborhood', 'text', 'e.g. Front St', prefill?.neighborhood),
-    cash_payout: field('Cash payout ($)', 'number', '40', prefill?.cash_payout, { min: '0', step: '1' }),
-    est_hours: field('Estimated hours', 'number', '2', prefill?.est_hours, { min: '0.5', step: '0.5' }),
+    cash_payout: field('Cash payout ($)', 'number', '40', prefill?.cash_payout, {
+      min: '0',
+      step: '1',
+    }),
+    est_hours: field('Estimated hours', 'number', '2', prefill?.est_hours, {
+      min: '0.5',
+      step: '0.5',
+    }),
   }
 
   const description = h('textarea', {
@@ -75,7 +81,12 @@ export function renderPostForm(root) {
   })
   if (prefill?.description) description.value = prefill.description
 
-  const submitBtn = h('button', { type: 'submit', class: 'btn-primary' }, 'Post gig')
+  const isEdit = !!prefill?.editId
+  const submitBtn = h(
+    'button',
+    { type: 'submit', class: 'btn-primary' },
+    isEdit ? 'Save changes' : 'Post gig',
+  )
 
   const form = h(
     'form',
@@ -98,22 +109,21 @@ export function renderPostForm(root) {
           from_post_id: prefill?.from_post_id ?? null,
         }
         submitBtn.disabled = true
-        submitBtn.textContent = 'Posting…'
+        submitBtn.textContent = isEdit ? 'Saving…' : 'Posting…'
         try {
-          await api.createGig(gig)
-          toast('Gig posted')
+          if (isEdit) await api.updateGig(prefill.editId, gig)
+          else await api.createGig(gig)
+          toast(isEdit ? 'Gig updated' : 'Gig posted')
           if (onPosted) onPosted()
         } catch (err) {
-          toast(err instanceof ApiError ? err.message : 'Could not post gig', 'error')
+          toast(err instanceof ApiError ? err.message : 'Could not save gig', 'error')
           submitBtn.disabled = false
-          submitBtn.textContent = 'Post gig'
+          submitBtn.textContent = isEdit ? 'Save changes' : 'Post gig'
         }
       },
     },
-    h('h1', { class: 'screen-title' }, 'Post a gig'),
-    prefill?.from_post_id
-      ? h('p', { class: 'hint' }, 'Started from a board post.')
-      : null,
+    h('h1', { class: 'screen-title' }, isEdit ? 'Edit gig' : 'Post a gig'),
+    prefill?.from_post_id ? h('p', { class: 'hint' }, 'Started from a board post.') : null,
     f.task_type.wrap,
     f.neighborhood.wrap,
     h('div', { class: 'row' }, f.cash_payout.wrap, f.est_hours.wrap),
@@ -140,7 +150,11 @@ function labeled(label, control) {
 export function renderRatePanel(gig, onDone) {
   let selected = 0
   const starBtns = []
-  const note = h('textarea', { class: 'input', rows: '2', placeholder: 'Optional note for the review' })
+  const note = h('textarea', {
+    class: 'input',
+    rows: '2',
+    placeholder: 'Optional note for the review',
+  })
   const payBtn = h('button', { class: 'btn-primary', disabled: true }, 'Close & pay')
 
   function paint() {

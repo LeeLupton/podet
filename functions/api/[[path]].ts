@@ -10,8 +10,9 @@
 
 import { Hono } from 'hono'
 import { handle } from 'hono/cloudflare-pages'
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { sign, verify } from 'hono/jwt'
-import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
+import { secureHeaders } from 'hono/secure-headers'
 
 type Env = {
   DB: D1Database
@@ -24,8 +25,67 @@ type Vars = {
 
 const app = new Hono<{ Bindings: Env; Variables: Vars }>().basePath('/api')
 
+// Harden JSON responses (nosniff, frame-deny, no-referrer). CSP for the HTML/JS
+// lives in public/_headers since those are static assets, not API responses.
+app.use('*', secureHeaders())
+
 const SESSION_DAYS = 30
 const SESSION_TTL = 60 * 60 * 24 * SESSION_DAYS
+
+// Input length caps — reject oversized payloads before they hit the DB.
+const LIMITS = {
+  email: 254,
+  password: 200,
+  display_name: 60,
+  task_type: 80,
+  neighborhood: 80,
+  description: 2000,
+  post_body: 1000,
+  comment_body: 1000,
+  area_label: 120,
+  review_body: 1000,
+}
+
+// Returns a trimmed string, or null if missing/too long/blank-when-required.
+function validateString(
+  value: unknown,
+  max: number,
+  { required = true } = {},
+): { ok: true; value: string | null } | { ok: false } {
+  if (value == null || value === '') return required ? { ok: false } : { ok: true, value: null }
+  if (typeof value !== 'string') return { ok: false }
+  const trimmed = value.trim()
+  if (required && !trimmed) return { ok: false }
+  if (trimmed.length > max) return { ok: false }
+  return { ok: true, value: trimmed || null }
+}
+
+/* ------------------------------------------------------------------ *
+ * Rate limiting — D1-backed fixed window, keyed by '<route>:<ip>'.
+ * Works on the free tier with no extra binding. Returns true if allowed.
+ * ------------------------------------------------------------------ */
+async function rateLimit(
+  c: any,
+  route: string,
+  limit: number,
+  windowSec: number,
+): Promise<boolean> {
+  const ip = c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown'
+  const key = `${route}:${ip}`
+  const now = Math.floor(Date.now() / 1000)
+  const windowStart = now - (now % windowSec)
+  // Upsert: start a fresh window when the stored one is stale, else increment.
+  const res = await c.env.DB.prepare(
+    `insert into rate_limits (key, count, window_start) values (?, 1, ?)
+     on conflict(key) do update set
+       count = case when rate_limits.window_start = excluded.window_start then rate_limits.count + 1 else 1 end,
+       window_start = excluded.window_start
+     returning count`,
+  )
+    .bind(key, windowStart)
+    .first()
+  return ((res as any)?.count ?? 1) <= limit
+}
 
 /* ------------------------------------------------------------------ *
  * Password hashing — PBKDF2-HMAC-SHA256 via Web Crypto.
@@ -49,7 +109,11 @@ function b64decode(str: string): Uint8Array {
   return bytes
 }
 
-async function deriveBits(password: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
+async function deriveBits(
+  password: string,
+  salt: Uint8Array,
+  iterations: number,
+): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(password),
@@ -78,10 +142,14 @@ function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0
 }
 
+// A well-formed dummy hash so login can run the same PBKDF2 work for unknown
+// emails — equalizing response time so it can't be used to enumerate accounts.
+const DUMMY_PASSWORD_HASH = `pbkdf2$${PBKDF2_ITERATIONS}$${b64encode(new Uint8Array(16))}$${b64encode(new Uint8Array(32))}`
+
 async function verifyPassword(password: string, encoded: string): Promise<boolean> {
   const parts = encoded.split('$')
   if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false
-  const iterations = parseInt(parts[1], 10)
+  const iterations = Number.parseInt(parts[1], 10)
   if (!Number.isFinite(iterations)) return false
   const salt = b64decode(parts[2])
   const expected = b64decode(parts[3])
@@ -135,7 +203,7 @@ async function auth(c: any, next: any) {
   let token = getCookie(c, 'session')
   if (!token) {
     const header = c.req.header('Authorization')
-    if (header && header.startsWith('Bearer ')) token = header.slice(7)
+    if (header?.startsWith('Bearer ')) token = header.slice(7)
   }
   if (!token) return c.json({ error: 'unauthenticated' }, 401)
   try {
@@ -150,19 +218,29 @@ async function auth(c: any, next: any) {
 /* ========================== AUTH (public) ========================== */
 
 app.post('/register', async (c) => {
+  if (!(await rateLimit(c, 'register', 5, 60))) {
+    return c.json({ error: 'too many attempts — try again shortly' }, 429)
+  }
   let body: any
   try {
     body = await c.req.json()
   } catch {
     return c.json({ error: 'invalid body' }, 400)
   }
-  const email = String(body.email ?? '').trim().toLowerCase()
+  const emailCheck = validateString(body.email, LIMITS.email)
+  if (!emailCheck.ok || !emailCheck.value) return c.json({ error: 'valid email required' }, 400)
+  const email = emailCheck.value.toLowerCase()
   const password = String(body.password ?? '')
-  const display_name = body.display_name ? String(body.display_name).trim() : null
-  if (!email || !password) return c.json({ error: 'email and password required' }, 400)
+  if (!password) return c.json({ error: 'password required' }, 400)
   if (password.length < 8) return c.json({ error: 'password must be at least 8 characters' }, 400)
+  if (password.length > LIMITS.password) return c.json({ error: 'password too long' }, 400)
+  const nameCheck = validateString(body.display_name, LIMITS.display_name, { required: false })
+  if (!nameCheck.ok) return c.json({ error: 'display_name too long' }, 400)
+  const display_name = nameCheck.value
 
-  const existing = await c.env.DB.prepare('select id from users where email = ?').bind(email).first()
+  const existing = await c.env.DB.prepare('select id from users where email = ?')
+    .bind(email)
+    .first()
   if (existing) return c.json({ error: 'email already registered' }, 409)
 
   const id = crypto.randomUUID()
@@ -178,13 +256,18 @@ app.post('/register', async (c) => {
 })
 
 app.post('/login', async (c) => {
+  if (!(await rateLimit(c, 'login', 10, 60))) {
+    return c.json({ error: 'too many attempts — try again shortly' }, 429)
+  }
   let body: any
   try {
     body = await c.req.json()
   } catch {
     return c.json({ error: 'invalid body' }, 400)
   }
-  const email = String(body.email ?? '').trim().toLowerCase()
+  const email = String(body.email ?? '')
+    .trim()
+    .toLowerCase()
   const password = String(body.password ?? '')
   if (!email || !password) return c.json({ error: 'email and password required' }, 400)
 
@@ -193,15 +276,16 @@ app.post('/login', async (c) => {
   )
     .bind(email)
     .first()
-  // Run the verify even when the user is missing would be ideal to avoid timing
-  // leaks; here we keep it simple and return a generic error either way.
-  if (!user) return c.json({ error: 'invalid credentials' }, 401)
-
-  const ok = await verifyPassword(password, user.password_hash)
-  if (!ok) return c.json({ error: 'invalid credentials' }, 401)
+  // Always run the PBKDF2 verify (against a dummy hash when the email is unknown)
+  // so response time doesn't reveal whether an account exists.
+  const ok = await verifyPassword(password, user ? user.password_hash : DUMMY_PASSWORD_HASH)
+  if (!user || !ok) return c.json({ error: 'invalid credentials' }, 401)
 
   const token = await issueSession(c, user.id)
-  return c.json({ token, user: { id: user.id, email: user.email, display_name: user.display_name } })
+  return c.json({
+    token,
+    user: { id: user.id, email: user.email, display_name: user.display_name },
+  })
 })
 
 app.post('/logout', (c) => {
@@ -228,9 +312,9 @@ app.get('/me', async (c) => {
 
 // Nearby AVAILABLE gigs: SQL bounding-box prefilter, JS Haversine refine + sort.
 app.get('/gigs/near', async (c) => {
-  const lat = parseFloat(c.req.query('lat') ?? '')
-  const lng = parseFloat(c.req.query('lng') ?? '')
-  const radius = parseFloat(c.req.query('radius') ?? '5')
+  const lat = Number.parseFloat(c.req.query('lat') ?? '')
+  const lng = Number.parseFloat(c.req.query('lng') ?? '')
+  const radius = Number.parseFloat(c.req.query('radius') ?? '5')
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     return c.json({ error: 'lat and lng required' }, 400)
   }
@@ -305,26 +389,39 @@ app.post('/gigs', async (c) => {
   } catch {
     return c.json({ error: 'invalid body' }, 400)
   }
-  const task_type = String(b.task_type ?? '').trim()
-  const neighborhood = String(b.neighborhood ?? '').trim()
-  const description = String(b.description ?? '').trim()
+  const taskCheck = validateString(b.task_type, LIMITS.task_type)
+  const hoodCheck = validateString(b.neighborhood, LIMITS.neighborhood)
+  const descCheck = validateString(b.description, LIMITS.description)
+  if (!taskCheck.ok || !hoodCheck.ok || !descCheck.ok) {
+    return c.json(
+      { error: 'task_type, neighborhood and description required (and within length limits)' },
+      400,
+    )
+  }
+  const task_type = taskCheck.value as string
+  const neighborhood = hoodCheck.value as string
+  const description = descCheck.value as string
   const cash_payout = Math.round(Number(b.cash_payout))
   const est_hours = Number(b.est_hours)
   const lat = Number(b.lat)
   const lng = Number(b.lng)
   const from_post_id = b.from_post_id ? String(b.from_post_id) : null
 
-  if (!task_type || !neighborhood || !description) {
-    return c.json({ error: 'task_type, neighborhood and description required' }, 400)
-  }
-  if (!Number.isFinite(cash_payout) || cash_payout < 0) {
+  if (!Number.isFinite(cash_payout) || cash_payout < 0 || cash_payout > 1_000_000) {
     return c.json({ error: 'cash_payout must be a non-negative number' }, 400)
   }
-  if (!Number.isFinite(est_hours) || est_hours <= 0) {
+  if (!Number.isFinite(est_hours) || est_hours <= 0 || est_hours > 10_000) {
     return c.json({ error: 'est_hours must be positive' }, 400)
   }
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-    return c.json({ error: 'lat and lng required' }, 400)
+  if (
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lng) ||
+    lat < -90 ||
+    lat > 90 ||
+    lng < -180 ||
+    lng > 180
+  ) {
+    return c.json({ error: 'valid lat and lng required' }, 400)
   }
 
   const id = crypto.randomUUID()
@@ -332,7 +429,18 @@ app.post('/gigs', async (c) => {
     `insert into gigs (id, task_type, neighborhood, cash_payout, est_hours, lat, lng, description, posted_by, from_post_id)
      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, task_type, neighborhood, cash_payout, est_hours, lat, lng, description, userId, from_post_id)
+    .bind(
+      id,
+      task_type,
+      neighborhood,
+      cash_payout,
+      est_hours,
+      lat,
+      lng,
+      description,
+      userId,
+      from_post_id,
+    )
     .run()
   return c.json({ id }, 201)
 })
@@ -365,30 +473,122 @@ app.post('/gigs/:id/complete', async (c) => {
     return c.json({ error: 'invalid body' }, 400)
   }
   const rating = Number(b.rating)
-  const review = b.review ? String(b.review) : null
+  const reviewCheck = validateString(b.review, LIMITS.review_body, { required: false })
+  if (!reviewCheck.ok) return c.json({ error: 'review too long' }, 400)
+  const review = reviewCheck.value
   if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
     return c.json({ error: 'rating must be an integer 1-5' }, 400)
   }
 
   const gig: any = await c.env.DB.prepare('select * from gigs where id = ?').bind(id).first()
   if (!gig) return c.json({ error: 'not found' }, 404)
-  if (gig.posted_by !== userId) return c.json({ error: 'only the poster can complete this gig' }, 403)
+  if (gig.posted_by !== userId)
+    return c.json({ error: 'only the poster can complete this gig' }, 403)
   if (gig.status !== 'CLAIMED') return c.json({ error: 'gig is not in a claimed state' }, 409)
 
   const reviewId = crypto.randomUUID()
   await c.env.DB.batch([
     c.env.DB.prepare(`update gigs set status = 'COMPLETED' where id = ?`).bind(id),
-    c.env.DB
-      .prepare(
-        `insert into reviews (id, gig_id, worker_id, hirer_id, stars, body) values (?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(reviewId, id, gig.claimed_by, userId, rating, review),
-    c.env.DB
-      .prepare(
-        `update users set total_gigs = total_gigs + 1, rating_sum = rating_sum + ?, rating_count = rating_count + 1 where id = ?`,
-      )
-      .bind(rating, gig.claimed_by),
+    c.env.DB.prepare(
+      `insert into reviews (id, gig_id, worker_id, hirer_id, stars, body) values (?, ?, ?, ?, ?, ?)`,
+    ).bind(reviewId, id, gig.claimed_by, userId, rating, review),
+    c.env.DB.prepare(
+      `update users set total_gigs = total_gigs + 1, rating_sum = rating_sum + ?, rating_count = rating_count + 1 where id = ?`,
+    ).bind(rating, gig.claimed_by),
   ])
+  return c.json({ ok: true })
+})
+
+// Edit your own gig — only while AVAILABLE (can't change a gig someone's working).
+app.put('/gigs/:id', async (c) => {
+  const userId = c.get('userId')
+  const id = c.req.param('id')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const taskCheck = validateString(b.task_type, LIMITS.task_type)
+  const hoodCheck = validateString(b.neighborhood, LIMITS.neighborhood)
+  const descCheck = validateString(b.description, LIMITS.description)
+  if (!taskCheck.ok || !hoodCheck.ok || !descCheck.ok) {
+    return c.json(
+      { error: 'task_type, neighborhood and description required (and within length limits)' },
+      400,
+    )
+  }
+  const cash_payout = Math.round(Number(b.cash_payout))
+  const est_hours = Number(b.est_hours)
+  const lat = Number(b.lat)
+  const lng = Number(b.lng)
+  if (!Number.isFinite(cash_payout) || cash_payout < 0 || cash_payout > 1_000_000) {
+    return c.json({ error: 'cash_payout must be a non-negative number' }, 400)
+  }
+  if (!Number.isFinite(est_hours) || est_hours <= 0 || est_hours > 10_000) {
+    return c.json({ error: 'est_hours must be positive' }, 400)
+  }
+  if (
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lng) ||
+    lat < -90 ||
+    lat > 90 ||
+    lng < -180 ||
+    lng > 180
+  ) {
+    return c.json({ error: 'valid lat and lng required' }, 400)
+  }
+  const res = await c.env.DB.prepare(
+    `update gigs set task_type = ?, neighborhood = ?, description = ?, cash_payout = ?, est_hours = ?, lat = ?, lng = ?
+      where id = ? and posted_by = ? and status = 'AVAILABLE'`,
+  )
+    .bind(
+      taskCheck.value,
+      hoodCheck.value,
+      descCheck.value,
+      cash_payout,
+      est_hours,
+      lat,
+      lng,
+      id,
+      userId,
+    )
+    .run()
+  if (res.meta.changes !== 1) {
+    return c.json({ error: 'not found, not yours, or no longer editable' }, 403)
+  }
+  return c.json({ ok: true })
+})
+
+// Delete your own gig — not once COMPLETED (keeps reviews/reputation honest).
+app.delete('/gigs/:id', async (c) => {
+  const userId = c.get('userId')
+  const id = c.req.param('id')
+  const res = await c.env.DB.prepare(
+    `delete from gigs where id = ? and posted_by = ? and status <> 'COMPLETED'`,
+  )
+    .bind(id, userId)
+    .run()
+  if (res.meta.changes !== 1) {
+    return c.json({ error: 'not found, not yours, or already completed' }, 403)
+  }
+  return c.json({ ok: true })
+})
+
+// Abandon a claim — the worker steps back; the gig returns to AVAILABLE.
+// Only the current claimer, only while CLAIMED.
+app.post('/gigs/:id/abandon', async (c) => {
+  const userId = c.get('userId')
+  const id = c.req.param('id')
+  const res = await c.env.DB.prepare(
+    `update gigs set status = 'AVAILABLE', claimed_by = null
+      where id = ? and status = 'CLAIMED' and claimed_by = ?`,
+  )
+    .bind(id, userId)
+    .run()
+  if (res.meta.changes !== 1) {
+    return c.json({ error: 'not your claimed gig' }, 403)
+  }
   return c.json({ ok: true })
 })
 
@@ -419,9 +619,13 @@ app.post('/posts', async (c) => {
   } catch {
     return c.json({ error: 'invalid body' }, 400)
   }
-  const body = String(b.body ?? '').trim()
-  if (!body) return c.json({ error: 'body required' }, 400)
-  const area_label = b.area_label ? String(b.area_label).trim() : null
+  const bodyCheck = validateString(b.body, LIMITS.post_body)
+  const areaCheck = validateString(b.area_label, LIMITS.area_label, { required: false })
+  if (!bodyCheck.ok || !bodyCheck.value)
+    return c.json({ error: 'body required (within length limit)' }, 400)
+  if (!areaCheck.ok) return c.json({ error: 'area_label too long' }, 400)
+  const body = bodyCheck.value
+  const area_label = areaCheck.value
   const lat = b.lat != null && Number.isFinite(Number(b.lat)) ? Number(b.lat) : null
   const lng = b.lng != null && Number.isFinite(Number(b.lng)) ? Number(b.lng) : null
 
@@ -469,9 +673,13 @@ app.put('/posts/:id', async (c) => {
   } catch {
     return c.json({ error: 'invalid body' }, 400)
   }
-  const body = String(b.body ?? '').trim()
-  if (!body) return c.json({ error: 'body required' }, 400)
-  const area_label = b.area_label ? String(b.area_label).trim() : null
+  const bodyCheck = validateString(b.body, LIMITS.post_body)
+  const areaCheck = validateString(b.area_label, LIMITS.area_label, { required: false })
+  if (!bodyCheck.ok || !bodyCheck.value)
+    return c.json({ error: 'body required (within length limit)' }, 400)
+  if (!areaCheck.ok) return c.json({ error: 'area_label too long' }, 400)
+  const body = bodyCheck.value
+  const area_label = areaCheck.value
   const res = await c.env.DB.prepare(
     `update posts set body = ?, area_label = ? where id = ? and author_id = ?`,
   )
@@ -488,7 +696,9 @@ app.delete('/posts/:id', async (c) => {
   const res = await c.env.DB.prepare(`delete from posts where id = ? and author_id = ?`)
     .bind(id, userId)
     .run()
-  if (res.meta.changes !== 1) return c.json({ error: 'not found or not yours' }, 403)
+  // meta.changes counts cascade-deleted comments/interest too, so a successful
+  // owner delete is >= 1; a non-owner (or missing) match is 0.
+  if (res.meta.changes < 1) return c.json({ error: 'not found or not yours' }, 403)
   return c.json({ ok: true })
 })
 
@@ -501,8 +711,10 @@ app.post('/posts/:id/comments', async (c) => {
   } catch {
     return c.json({ error: 'invalid body' }, 400)
   }
-  const body = String(b.body ?? '').trim()
-  if (!body) return c.json({ error: 'body required' }, 400)
+  const bodyCheck = validateString(b.body, LIMITS.comment_body)
+  if (!bodyCheck.ok || !bodyCheck.value)
+    return c.json({ error: 'body required (within length limit)' }, 400)
+  const body = bodyCheck.value
   const post = await c.env.DB.prepare('select id from posts where id = ?').bind(postId).first()
   if (!post) return c.json({ error: 'post not found' }, 404)
   const id = crypto.randomUUID()
@@ -524,8 +736,10 @@ app.put('/comments/:id', async (c) => {
   } catch {
     return c.json({ error: 'invalid body' }, 400)
   }
-  const body = String(b.body ?? '').trim()
-  if (!body) return c.json({ error: 'body required' }, 400)
+  const bodyCheck = validateString(b.body, LIMITS.comment_body)
+  if (!bodyCheck.ok || !bodyCheck.value)
+    return c.json({ error: 'body required (within length limit)' }, 400)
+  const body = bodyCheck.value
   const res = await c.env.DB.prepare(
     `update post_comments set body = ? where id = ? and author_id = ?`,
   )
@@ -552,9 +766,7 @@ app.post('/posts/:id/interest', async (c) => {
   const postId = c.req.param('id')
   const post = await c.env.DB.prepare('select id from posts where id = ?').bind(postId).first()
   if (!post) return c.json({ error: 'post not found' }, 404)
-  await c.env.DB.prepare(
-    `insert or ignore into post_interest (post_id, user_id) values (?, ?)`,
-  )
+  await c.env.DB.prepare(`insert or ignore into post_interest (post_id, user_id) values (?, ?)`)
     .bind(postId, userId)
     .run()
   return c.json({ ok: true, interested: true })
@@ -616,3 +828,6 @@ app.onError((err, c) => {
 })
 
 export const onRequest = handle(app)
+
+// Exported for integration tests (call app.request(path, init, env) directly).
+export { app }
