@@ -1,0 +1,20 @@
+{
+  "name": "podnet",
+  "version": "1.0.0",
+  "description": "PodNet — Neighborhood Gig & Improvement Board (Cloudflare-native)",
+  "private": true,
+  "license": "Unlicense",
+  "scripts": {
+    "dev": "wrangler pages dev . --d1 DB=podnet",
+    "db:init": "wrangler d1 execute podnet --file schema.sql",
+    "db:init:local": "wrangler d1 execute podnet --local --file schema.sql",
+    "deploy": "wrangler pages deploy ."
+  },
+  "dependencies": {
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909.0",
+    "wrangler": "^3.78.0"
+  }
+}

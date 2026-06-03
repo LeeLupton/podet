@@ -1,0 +1,16 @@
+# Files in the project root that must NOT be served as static assets by Pages.
+# The API (functions/) is compiled separately and is never a static asset.
+.dev.vars
+.dev.vars.example
+.gitignore
+.assetsignore
+node_modules
+functions
+schema.sql
+wrangler.toml
+tsconfig.json
+package.json
+package-lock.json
+README.md
+LICENSE
+.wrangler
