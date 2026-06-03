@@ -97,4 +97,11 @@ export const api = {
   user: (id) => request(`/users/${id}`),
   userReviews: (id, before) =>
     request(`/users/${id}/reviews${before ? `?before=${encodeURIComponent(before)}` : ''}`),
+
+  // Web push
+  pushKey: () => request('/push/key'),
+  subscribePush: (subscription) =>
+    request('/push/subscribe', { method: 'POST', body: subscription }),
+  unsubscribePush: (endpoint) =>
+    request('/push/subscribe', { method: 'DELETE', body: { endpoint } }),
 }

@@ -143,6 +143,24 @@ if (/SESSION_SECRET/.test(secretList.stdout)) {
   ok('SESSION_SECRET generated and stored as a Pages secret')
 }
 
+// --- 6b. VAPID keys for web push -----------------------------------------
+heading('Ensuring web-push (VAPID) keys')
+if (/VAPID_PUBLIC_KEY/.test(secretList.stdout)) {
+  ok('VAPID keys already set (left unchanged)')
+} else {
+  const { publicKey, privateJwk } = await generateVapidKeys()
+  const set = (name, value) =>
+    wrangler(['pages', 'secret', 'put', name, '--project-name', PROJECT], {
+      capture: true,
+      input: `${value}\n`,
+    })
+  if (set('VAPID_PUBLIC_KEY', publicKey).status !== 0) die('Failed to set VAPID_PUBLIC_KEY')
+  if (set('VAPID_PRIVATE_KEY', JSON.stringify(privateJwk)).status !== 0)
+    die('Failed to set VAPID_PRIVATE_KEY')
+  set('VAPID_SUBJECT', 'mailto:podnet@example.com')
+  ok('VAPID keypair generated and stored as Pages secrets')
+}
+
 // --- 7. deploy ------------------------------------------------------------
 heading('Deploying to Cloudflare Pages')
 const deploy = wrangler(
@@ -172,6 +190,18 @@ function findExistingD1(name) {
   } catch {
     return null
   }
+}
+
+// Generate a P-256 VAPID keypair: public as base64url raw (65 bytes), private as JWK.
+async function generateVapidKeys() {
+  const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, [
+    'sign',
+    'verify',
+  ])
+  const raw = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey))
+  const privateJwk = await crypto.subtle.exportKey('jwk', kp.privateKey)
+  const publicKey = Buffer.from(raw).toString('base64url')
+  return { publicKey, privateJwk }
 }
 
 function writeDatabaseId(id) {

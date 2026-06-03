@@ -111,12 +111,18 @@ Re-running `npm run setup` redeploys using the same database and secret (it won'
 ```bash
 wrangler d1 create podnet                         # copy database_id into wrangler.toml
 npm run db:init                                    # apply schema.sql to the remote DB
+wrangler r2 bucket create podnet-photos            # photos bucket (env.PHOTOS)
 wrangler pages project create podnet --production-branch main
 wrangler pages secret put SESSION_SECRET           # paste a long random string
+# Web push (optional): generate a VAPID keypair and store both halves:
+wrangler pages secret put VAPID_PUBLIC_KEY         # base64url raw P-256 public key
+wrangler pages secret put VAPID_PRIVATE_KEY        # the matching private key as JWK JSON
 npm run deploy                                      # wrangler pages deploy
 ```
 
-The D1 binding (`DB`) comes from `wrangler.toml`, so there's no manual dashboard step.
+`npm run setup` does all of the above automatically (including generating the VAPID keys).
+The `DB` and `PHOTOS` bindings come from `wrangler.toml`, so there's no manual dashboard step.
+If `VAPID_*` is unset, notifications are simply disabled (everything else still works).
 The API lives at `/api/*` on the same origin, so cookies are first-party and there is no CORS.
 D1 does not pause, so there is no keep-alive to run.
 
@@ -130,8 +136,21 @@ D1 does not pause, so there is no keep-alive to run.
   Hono `secureHeaders()` for API responses.
 - Auth endpoints are rate-limited (D1-backed fixed window); login runs constant-work PBKDF2
   even for unknown emails to avoid account enumeration.
-- Tests (`npm test`) run the API against a real local D1 in the Workers runtime; CI runs
+- Tests (`npm test`) run the API against a real local D1/R2 in the Workers runtime; CI runs
   typecheck + lint + tests on every push.
+
+## Capabilities
+
+- **Work photos** — at review time the hirer attaches photos of the finished job (stored in
+  R2). They appear on both the worker's portfolio and the hirer's profile.
+- **Pagination** — the board and reviews use keyset paging with a "Load more" button.
+- **Near-realtime feed** — Nearby auto-refreshes (~20s) while it's the active, visible tab,
+  in addition to refreshing on focus. (A push-based Durable Object feed would need a separate
+  Worker deploy, so this stays within the single Pages project.)
+- **Web push notifications** — opt-in from the Me tab; the hirer is notified when their gig is
+  claimed and the worker when their work is rated. Sends are best-effort (a failed push never
+  affects the gig flow). Requires the `VAPID_*` secrets (created by `npm run setup`).
+  Note: end-to-end delivery to a device wasn't verified in CI — the crypto/builders are unit-tested.
 - The Tailwind v3 Play CDN compiles in-browser and so requires `'unsafe-eval'`/`'unsafe-inline'`
   in the CSP. Precompiling Tailwind to a static stylesheet (a small build step) would let you
   drop both — a worthwhile follow-up for stricter CSP.

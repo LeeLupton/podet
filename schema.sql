@@ -78,6 +78,18 @@ create table if not exists gig_photos (
   created_at  text not null default (datetime('now'))
 );
 
+-- WEB PUSH — a user's browser push subscriptions (endpoint + keys). The server
+-- sends best-effort notifications (gig claimed → poster; gig completed → worker).
+create table if not exists push_subscriptions (
+  endpoint   text primary key,
+  user_id    text not null references users(id) on delete cascade,
+  p256dh     text not null,
+  auth       text not null,
+  created_at text not null default (datetime('now'))
+);
+
+create index if not exists idx_push_user on push_subscriptions(user_id);
+
 -- RATE LIMITING — fixed-window counters for auth endpoints (D1-backed so it works
 -- everywhere on the free tier, no extra binding). key = '<route>:<ip>'.
 create table if not exists rate_limits (
