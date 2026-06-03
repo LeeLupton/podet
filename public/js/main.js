@@ -6,7 +6,7 @@ import { h, clear, toast } from './ui.js'
 import { renderFeed, resetFeed } from './feed.js'
 import { renderBoard, setOnTurnIntoGig } from './board.js'
 import { renderPostForm, setPrefill, setOnPosted } from './post.js'
-import { renderProfile, setOnLoggedOut } from './profile.js'
+import { renderProfile, setOnLoggedOut, setOnEditGig } from './profile.js'
 
 const VIEWS = {
   nearby: { el: () => document.getElementById('view-nearby'), render: renderFeed },
@@ -105,6 +105,19 @@ setOnPosted(() => {
 })
 setOnTurnIntoGig((data) => {
   setPrefill(data)
+  navigate('post')
+})
+setOnEditGig((g) => {
+  setPrefill({
+    editId: g.id,
+    task_type: g.task_type,
+    neighborhood: g.neighborhood,
+    cash_payout: g.cash_payout,
+    est_hours: g.est_hours,
+    description: g.description,
+    lat: g.lat,
+    lng: g.lng,
+  })
   navigate('post')
 })
 setOnLoggedOut(() => {

@@ -4,6 +4,7 @@
 import { api, ApiError } from './api.js'
 import { getUser } from './auth.js'
 import { h, clear, toast, spinner, errorState, emptyState, fmtDate } from './ui.js'
+import { nameLink } from './profile.js'
 
 // main.js wires this so "Turn into a gig" can prefill the Post screen and switch tabs.
 let onTurnIntoGig = null
@@ -112,7 +113,7 @@ function postCard(p) {
   const header = h(
     'div',
     { class: 'post-head' },
-    h('span', { class: 'post-author' }, p.author_name || 'Someone'),
+    h('span', { class: 'post-author' }, nameLink(p.author_name, p.author_id)),
     p.area_label ? h('span', { class: 'post-area' }, p.area_label) : null,
   )
   const bodyEl = h('p', { class: 'post-body' }, p.body)
@@ -203,6 +204,7 @@ async function renderExpanded(p, wrap, reloadList) {
   // owner controls
   if (me && full.author_id === me.id) {
     actions.append(
+      h('button', { class: 'btn-ghost', onClick: () => openEditPost(full, wrap, reloadList, () => refresh()) }, 'Edit'),
       h(
         'button',
         {
@@ -260,7 +262,7 @@ function commentRow(cm, me, reloadList, refresh) {
   const row = h(
     'div',
     { class: 'comment' },
-    h('span', { class: 'comment-author' }, cm.author_name || 'Someone'),
+    h('span', { class: 'comment-author' }, nameLink(cm.author_name, cm.author_id)),
     h('span', { class: 'comment-body' }, cm.body),
     h('span', { class: 'comment-date' }, fmtDate(cm.created_at)),
   )
@@ -285,4 +287,40 @@ function commentRow(cm, me, reloadList, refresh) {
     )
   }
   return row
+}
+
+// Inline editor for your own post (body + optional area label).
+function openEditPost(full, wrap, reloadList, refresh) {
+  const body = h('textarea', { class: 'input', rows: '3' })
+  body.value = full.body
+  const area = h('input', { class: 'input', type: 'text', placeholder: 'Area label (optional)' })
+  if (full.area_label) area.value = full.area_label
+  const save = h('button', { class: 'btn-primary', type: 'submit' }, 'Save changes')
+  const cancel = h('button', { class: 'btn-ghost', type: 'button', onClick: () => refresh() }, 'Cancel')
+  const form = h(
+    'form',
+    {
+      class: 'form',
+      onSubmit: async (e) => {
+        e.preventDefault()
+        const text = body.value.trim()
+        if (!text) return toast('Post can’t be empty', 'error')
+        save.disabled = true
+        try {
+          await api.updatePost(full.id, text, area.value.trim() || null)
+          toast('Post updated')
+          await refresh()
+          reloadList()
+        } catch (err) {
+          toast(err instanceof ApiError ? err.message : 'Could not save', 'error')
+          save.disabled = false
+        }
+      },
+    },
+    body,
+    area,
+    h('div', { class: 'post-actions' }, save, cancel),
+  )
+  clear(wrap)
+  wrap.append(form)
 }

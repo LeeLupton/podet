@@ -4,17 +4,27 @@
   "description": "PodNet — Neighborhood Gig & Improvement Board (Cloudflare-native)",
   "private": true,
   "license": "Unlicense",
+  "type": "module",
   "scripts": {
-    "dev": "wrangler pages dev . --d1 DB=podnet",
-    "db:init": "wrangler d1 execute podnet --file schema.sql",
+    "setup": "node scripts/setup.mjs",
+    "dev": "wrangler pages dev",
+    "db:init": "wrangler d1 execute podnet --remote --file schema.sql",
     "db:init:local": "wrangler d1 execute podnet --local --file schema.sql",
-    "deploy": "wrangler pages deploy ."
+    "deploy": "wrangler pages deploy",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "vitest run"
   },
   "dependencies": {
     "hono": "^4.6.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@cloudflare/vitest-pool-workers": "^0.5.0",
     "@cloudflare/workers-types": "^4.20240909.0",
-    "wrangler": "^3.78.0"
+    "typescript": "^5.6.0",
+    "vitest": "2.1.9",
+    "wrangler": "^3.114.0"
   }
 }

@@ -60,7 +60,10 @@ export const api = {
   gig: (id) => request(`/gigs/${id}`),
   myGigs: () => request('/gigs/mine'),
   createGig: (gig) => request('/gigs', { method: 'POST', body: gig }),
+  updateGig: (id, gig) => request(`/gigs/${id}`, { method: 'PUT', body: gig }),
+  deleteGig: (id) => request(`/gigs/${id}`, { method: 'DELETE' }),
   claimGig: (id) => request(`/gigs/${id}/claim`, { method: 'POST' }),
+  abandonGig: (id) => request(`/gigs/${id}/abandon`, { method: 'POST' }),
   completeGig: (id, rating, review) =>
     request(`/gigs/${id}/complete`, { method: 'POST', body: { rating, review } }),
 

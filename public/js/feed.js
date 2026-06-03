@@ -4,6 +4,7 @@
 
 import { api, ApiError } from './api.js'
 import { h, clear, toast, spinner, errorState, emptyState, money, openSheet } from './ui.js'
+import { nameLink } from './profile.js'
 
 const DEFAULT_RADIUS = 5
 let radius = DEFAULT_RADIUS
@@ -146,7 +147,7 @@ function openGig(g) {
     h('div', { class: 'payout payout-lg' }, money(g.cash_payout)),
     h('h2', { class: 'gig-title' }, g.task_type),
     h('div', { class: 'gig-meta' }, `${g.distance_mi.toFixed(1)} mi · ${g.est_hours} hr · ${g.neighborhood}`),
-    g.poster_name ? h('div', { class: 'gig-meta' }, `Posted by ${g.poster_name}`) : null,
+    g.poster_name ? h('div', { class: 'gig-meta' }, 'Posted by ', nameLink(g.poster_name, g.posted_by)) : null,
     h('p', { class: 'gig-desc' }, g.description),
     mapLink(g),
     claimBtn,

@@ -67,6 +67,14 @@ create table if not exists post_interest (
   primary key (post_id, user_id)
 );
 
+-- RATE LIMITING — fixed-window counters for auth endpoints (D1-backed so it works
+-- everywhere on the free tier, no extra binding). key = '<route>:<ip>'.
+create table if not exists rate_limits (
+  key          text primary key,
+  count        integer not null,
+  window_start integer not null            -- unix seconds of the current window
+);
+
 create index if not exists idx_gigs_status   on gigs(status);
 create index if not exists idx_gigs_bbox     on gigs(lat, lng);
 create index if not exists idx_reviews_wkr   on reviews(worker_id);

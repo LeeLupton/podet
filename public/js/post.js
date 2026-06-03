@@ -75,7 +75,8 @@ export function renderPostForm(root) {
   })
   if (prefill?.description) description.value = prefill.description
 
-  const submitBtn = h('button', { type: 'submit', class: 'btn-primary' }, 'Post gig')
+  const isEdit = !!prefill?.editId
+  const submitBtn = h('button', { type: 'submit', class: 'btn-primary' }, isEdit ? 'Save changes' : 'Post gig')
 
   const form = h(
     'form',
@@ -98,19 +99,20 @@ export function renderPostForm(root) {
           from_post_id: prefill?.from_post_id ?? null,
         }
         submitBtn.disabled = true
-        submitBtn.textContent = 'Posting…'
+        submitBtn.textContent = isEdit ? 'Saving…' : 'Posting…'
         try {
-          await api.createGig(gig)
-          toast('Gig posted')
+          if (isEdit) await api.updateGig(prefill.editId, gig)
+          else await api.createGig(gig)
+          toast(isEdit ? 'Gig updated' : 'Gig posted')
           if (onPosted) onPosted()
         } catch (err) {
-          toast(err instanceof ApiError ? err.message : 'Could not post gig', 'error')
+          toast(err instanceof ApiError ? err.message : 'Could not save gig', 'error')
           submitBtn.disabled = false
-          submitBtn.textContent = 'Post gig'
+          submitBtn.textContent = isEdit ? 'Save changes' : 'Post gig'
         }
       },
     },
-    h('h1', { class: 'screen-title' }, 'Post a gig'),
+    h('h1', { class: 'screen-title' }, isEdit ? 'Edit gig' : 'Post a gig'),
     prefill?.from_post_id
       ? h('p', { class: 'hint' }, 'Started from a board post.')
       : null,
