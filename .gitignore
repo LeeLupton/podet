@@ -1,0 +1,17 @@
+# Secrets — never commit. Live only in Cloudflare Pages settings / local .dev.vars
+.dev.vars
+.env
+.env.*
+
+# Dependencies
+node_modules/
+
+# Wrangler / Cloudflare local state
+.wrangler/
+
+# Build output
+dist/
+
+# Misc
+.DS_Store
+*.log

@@ -1,0 +1,3 @@
+# Copy to `.dev.vars` for local `wrangler dev`. `.dev.vars` is git-ignored — never commit real secrets.
+# In production, set this with: wrangler pages secret put SESSION_SECRET
+SESSION_SECRET="generate-a-long-random-string-here"
