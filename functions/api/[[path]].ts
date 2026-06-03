@@ -280,22 +280,8 @@ app.get('/gigs/near', async (c) => {
   return c.json(near)
 })
 
-// Single gig (with poster + worker names) — useful for the detail sheet / Me view.
-app.get('/gigs/:id', async (c) => {
-  const gig: any = await c.env.DB.prepare(
-    `select g.*, hp.display_name as poster_name, wp.display_name as worker_name
-       from gigs g
-       join users hp on hp.id = g.posted_by
-       left join users wp on wp.id = g.claimed_by
-      where g.id = ?`,
-  )
-    .bind(c.req.param('id'))
-    .first()
-  if (!gig) return c.json({ error: 'not found' }, 404)
-  return c.json(gig)
-})
-
 // Gigs posted by, or claimed by, the signed-in user (for the Me view).
+// NOTE: must be registered BEFORE '/gigs/:id', or ':id' captures "mine".
 app.get('/gigs/mine', async (c) => {
   const userId = c.get('userId')
   const posted = await c.env.DB.prepare(
@@ -320,6 +306,21 @@ app.get('/gigs/mine', async (c) => {
   )
   for (const g of postedRows) g.photos = photos.get(g.id) ?? []
   return c.json({ posted: postedRows, claimed: claimed.results })
+})
+
+// Single gig (with poster + worker names) — useful for the detail sheet / Me view.
+app.get('/gigs/:id', async (c) => {
+  const gig: any = await c.env.DB.prepare(
+    `select g.*, hp.display_name as poster_name, wp.display_name as worker_name
+       from gigs g
+       join users hp on hp.id = g.posted_by
+       left join users wp on wp.id = g.claimed_by
+      where g.id = ?`,
+  )
+    .bind(c.req.param('id'))
+    .first()
+  if (!gig) return c.json({ error: 'not found' }, 404)
+  return c.json(gig)
 })
 
 // Create a gig — posted_by = session user.
