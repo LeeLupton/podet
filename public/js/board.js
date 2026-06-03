@@ -3,6 +3,7 @@
 
 import { ApiError, api } from './api.js'
 import { getUser } from './auth.js'
+import { requestGeolocation } from './location.js'
 import { nameLink } from './profile.js'
 import { clear, emptyState, errorState, fmtDate, h, spinner, toast } from './ui.js'
 
@@ -36,20 +37,17 @@ function composer() {
     { type: 'button', class: 'btn-ghost', onClick: locate },
     '📍 Use my location',
   )
-  function locate() {
-    if (!navigator.geolocation) return toast('Geolocation unavailable', 'error')
+  async function locate() {
     pinBtn.textContent = 'Locating…'
-    navigator.geolocation.getCurrentPosition(
-      (p) => {
-        pin.lat = p.coords.latitude
-        pin.lng = p.coords.longitude
-        pinBtn.textContent = 'Pin set ✓'
-      },
-      () => {
-        pinBtn.textContent = '📍 Use my location'
-        toast('Could not get location', 'error')
-      },
-    )
+    try {
+      const c = await requestGeolocation()
+      pin.lat = c.lat
+      pin.lng = c.lng
+      pinBtn.textContent = 'Pin set ✓'
+    } catch (err) {
+      pinBtn.textContent = '📍 Use my location'
+      toast(err.message, 'error')
+    }
   }
   const postBtn = h('button', { class: 'btn-primary', type: 'submit' }, 'Post to board')
   return h(

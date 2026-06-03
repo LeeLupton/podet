@@ -2,6 +2,7 @@
 // shown on your own CLAIMED gigs. Everything routes through api.js.
 
 import { ApiError, api } from './api.js'
+import { getCoords, requestGeolocation, setCoords } from './location.js'
 import { clear, h, money, openImage, toast } from './ui.js'
 
 // Optional prefill when "Turn into a gig" comes from a board post.
@@ -21,44 +22,46 @@ export function renderPostForm(root) {
   const prefill = pendingPrefill
   pendingPrefill = null
 
-  // location pin state (lat/lng), optionally seeded from a post.
-  const pin = { lat: prefill?.lat ?? null, lng: prefill?.lng ?? null }
-
-  const pinLabel = h(
-    'span',
-    { class: 'pin-label' },
-    pin.lat != null ? 'Pin set ✓' : 'No location yet',
-  )
+  // Location: manual lat/lng inputs (so posting works without GPS), seeded from
+  // the prefill, then the last location you used in Nearby.
+  const seed = prefill?.lat != null ? { lat: prefill.lat, lng: prefill.lng } : getCoords()
+  const latInput = h('input', {
+    class: 'input',
+    type: 'number',
+    step: 'any',
+    placeholder: 'Latitude',
+    value: seed ? String(seed.lat) : '',
+  })
+  const lngInput = h('input', {
+    class: 'input',
+    type: 'number',
+    step: 'any',
+    placeholder: 'Longitude',
+    value: seed ? String(seed.lng) : '',
+  })
 
   const locBtn = h(
     'button',
-    { type: 'button', class: 'btn-ghost', onClick: useLocation },
-    'Use my location',
+    {
+      type: 'button',
+      class: 'btn-ghost',
+      onClick: async () => {
+        locBtn.textContent = 'Locating…'
+        locBtn.disabled = true
+        try {
+          const c = await requestGeolocation()
+          latInput.value = String(c.lat)
+          lngInput.value = String(c.lng)
+        } catch (err) {
+          toast(err.message, 'error')
+        } finally {
+          locBtn.textContent = '📍 Use my location'
+          locBtn.disabled = false
+        }
+      },
+    },
+    '📍 Use my location',
   )
-
-  function useLocation() {
-    if (!navigator.geolocation) {
-      toast('Geolocation not available on this device', 'error')
-      return
-    }
-    locBtn.textContent = 'Locating…'
-    locBtn.disabled = true
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        pin.lat = pos.coords.latitude
-        pin.lng = pos.coords.longitude
-        pinLabel.textContent = 'Pin set ✓'
-        locBtn.textContent = 'Update location'
-        locBtn.disabled = false
-      },
-      () => {
-        toast('Could not get your location', 'error')
-        locBtn.textContent = 'Use my location'
-        locBtn.disabled = false
-      },
-      { enableHighAccuracy: true, timeout: 10000 },
-    )
-  }
 
   const f = {
     task_type: field('Task', 'text', 'e.g. Rake leaves', prefill?.task_type),
@@ -94,18 +97,28 @@ export function renderPostForm(root) {
       class: 'card form',
       onSubmit: async (e) => {
         e.preventDefault()
-        if (pin.lat == null || pin.lng == null) {
-          toast('Set a location for the gig first', 'error')
+        const lat = Number(latInput.value)
+        const lng = Number(lngInput.value)
+        if (
+          !Number.isFinite(lat) ||
+          !Number.isFinite(lng) ||
+          lat < -90 ||
+          lat > 90 ||
+          lng < -180 ||
+          lng > 180
+        ) {
+          toast('Set a valid location for the gig first', 'error')
           return
         }
+        setCoords({ lat, lng }) // remember for Nearby + next post
         const gig = {
           task_type: f.task_type.input.value.trim(),
           neighborhood: f.neighborhood.input.value.trim(),
           cash_payout: Number(f.cash_payout.input.value),
           est_hours: Number(f.est_hours.input.value),
           description: description.value.trim(),
-          lat: pin.lat,
-          lng: pin.lng,
+          lat,
+          lng,
           from_post_id: prefill?.from_post_id ?? null,
         }
         submitBtn.disabled = true
@@ -128,7 +141,10 @@ export function renderPostForm(root) {
     f.neighborhood.wrap,
     h('div', { class: 'row' }, f.cash_payout.wrap, f.est_hours.wrap),
     labeled('Description', description),
-    labeled('Location', h('div', { class: 'loc' }, locBtn, pinLabel)),
+    labeled(
+      'Location',
+      h('div', { class: 'loc-fields' }, locBtn, h('div', { class: 'row' }, latInput, lngInput)),
+    ),
     submitBtn,
   )
 

@@ -3,12 +3,13 @@
 // connection — realtime is deferred per the spec).
 
 import { ApiError, api } from './api.js'
+import { getCoords, requestGeolocation, setCoords } from './location.js'
 import { nameLink } from './profile.js'
 import { clear, emptyState, errorState, h, money, openSheet, spinner, toast } from './ui.js'
 
 const DEFAULT_RADIUS = 5
 let radius = DEFAULT_RADIUS
-let coords = null // {lat, lng}
+let coords = getCoords() // {lat, lng} — remembered across reloads
 let listEl = null
 let mounted = false
 
@@ -36,7 +37,13 @@ export function renderFeed(root) {
   const header = h(
     'div',
     { class: 'feed-header' },
-    h('div', { class: 'radius-row' }, h('span', { class: 'radius-label' }, 'Within'), radiusValue),
+    h(
+      'div',
+      { class: 'radius-row' },
+      h('span', { class: 'radius-label' }, 'Within'),
+      radiusValue,
+      h('button', { class: 'link-btn', onClick: () => showLocationForm() }, 'Change location'),
+    ),
     slider,
   )
 
@@ -88,29 +95,83 @@ function ensureCoordsThenLoad() {
     load()
     return
   }
+  // Don't auto-request geolocation — browsers only show the permission prompt in
+  // response to a user gesture (a tap), so present the panel and let the user ask.
+  showLocationForm()
+}
+
+// Non-blocking location: try the device, or type coordinates by hand. Either way
+// the choice is remembered, so location is never a dead end (great for local dev,
+// non-secure origins, or when the user declines GPS).
+function showLocationForm(message) {
   clear(listEl)
-  listEl.append(spinner('Finding your location…'))
-  if (!navigator.geolocation) {
-    clear(listEl)
-    listEl.append(errorState('Location unavailable on this device', null))
-    return
-  }
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      coords = { lat: pos.coords.latitude, lng: pos.coords.longitude }
-      load()
+  const lat = h('input', {
+    class: 'input',
+    type: 'number',
+    step: 'any',
+    placeholder: 'Latitude',
+    value: coords ? String(coords.lat) : '',
+  })
+  const lng = h('input', {
+    class: 'input',
+    type: 'number',
+    step: 'any',
+    placeholder: 'Longitude',
+    value: coords ? String(coords.lng) : '',
+  })
+
+  const useGps = h(
+    'button',
+    {
+      type: 'button',
+      class: 'btn-ghost',
+      onClick: async () => {
+        useGps.textContent = 'Locating…'
+        useGps.disabled = true
+        try {
+          // Called from a tap → the browser shows the permission prompt here.
+          coords = setCoords(await requestGeolocation())
+          renderFeed(document.getElementById('view-nearby'))
+        } catch (err) {
+          toast(err.message, 'error')
+          useGps.textContent = '📍 Use my location'
+          useGps.disabled = false
+        }
+      },
     },
-    () => {
-      clear(listEl)
-      listEl.append(
-        errorState(
-          'Location permission denied — enable it to see nearby gigs',
-          ensureCoordsThenLoad,
-        ),
-      )
-    },
-    { enableHighAccuracy: true, timeout: 10000 },
+    '📍 Use my location',
   )
+
+  const form = h(
+    'form',
+    {
+      class: 'card form',
+      onSubmit: (e) => {
+        e.preventDefault()
+        const la = Number(lat.value)
+        const ln = Number(lng.value)
+        if (
+          !Number.isFinite(la) ||
+          !Number.isFinite(ln) ||
+          la < -90 ||
+          la > 90 ||
+          ln < -180 ||
+          ln > 180
+        ) {
+          toast('Enter a valid latitude and longitude', 'error')
+          return
+        }
+        coords = setCoords({ lat: la, lng: ln })
+        renderFeed(document.getElementById('view-nearby'))
+      },
+    },
+    h('h2', { class: 'screen-title' }, 'Set your location'),
+    message ? h('p', { class: 'hint', style: 'color:var(--warning)' }, message) : null,
+    useGps,
+    h('div', { class: 'row' }, lat, lng),
+    h('button', { type: 'submit', class: 'btn-primary' }, 'Show nearby gigs'),
+  )
+  listEl.append(form)
 }
 
 async function load() {
