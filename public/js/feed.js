@@ -2,9 +2,9 @@
 // The radius slider re-queries; the view re-queries on focus/visibility (no live
 // connection — realtime is deferred per the spec).
 
-import { api, ApiError } from './api.js'
-import { h, clear, toast, spinner, errorState, emptyState, money, openSheet } from './ui.js'
+import { ApiError, api } from './api.js'
 import { nameLink } from './profile.js'
+import { clear, emptyState, errorState, h, money, openSheet, spinner, toast } from './ui.js'
 
 const DEFAULT_RADIUS = 5
 let radius = DEFAULT_RADIUS
@@ -81,7 +81,10 @@ function ensureCoordsThenLoad() {
     () => {
       clear(listEl)
       listEl.append(
-        errorState('Location permission denied — enable it to see nearby gigs', ensureCoordsThenLoad),
+        errorState(
+          'Location permission denied — enable it to see nearby gigs',
+          ensureCoordsThenLoad,
+        ),
       )
     },
     { enableHighAccuracy: true, timeout: 10000 },
@@ -146,8 +149,14 @@ function openGig(g) {
     { class: 'sheet-body' },
     h('div', { class: 'payout payout-lg' }, money(g.cash_payout)),
     h('h2', { class: 'gig-title' }, g.task_type),
-    h('div', { class: 'gig-meta' }, `${g.distance_mi.toFixed(1)} mi · ${g.est_hours} hr · ${g.neighborhood}`),
-    g.poster_name ? h('div', { class: 'gig-meta' }, 'Posted by ', nameLink(g.poster_name, g.posted_by)) : null,
+    h(
+      'div',
+      { class: 'gig-meta' },
+      `${g.distance_mi.toFixed(1)} mi · ${g.est_hours} hr · ${g.neighborhood}`,
+    ),
+    g.poster_name
+      ? h('div', { class: 'gig-meta' }, 'Posted by ', nameLink(g.poster_name, g.posted_by))
+      : null,
     h('p', { class: 'gig-desc' }, g.description),
     mapLink(g),
     claimBtn,

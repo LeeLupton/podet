@@ -2,10 +2,21 @@
 // your posted/active gigs. CLAIMED gigs you posted get the inline rate panel.
 // Also exposes openUserProfile(id) — a read-only sheet for any worker's portfolio.
 
-import { api, ApiError } from './api.js'
+import { ApiError, api } from './api.js'
 import { getUser, logout } from './auth.js'
-import { h, clear, toast, spinner, errorState, emptyState, starsText, money, fmtDate, openSheet } from './ui.js'
 import { renderRatePanel } from './post.js'
+import {
+  clear,
+  emptyState,
+  errorState,
+  fmtDate,
+  h,
+  money,
+  openSheet,
+  spinner,
+  starsText,
+  toast,
+} from './ui.js'
 
 // main.js sets these so logout returns to the gate and "Edit" opens the gig form.
 let onLoggedOut = null
@@ -42,7 +53,11 @@ async function load(root) {
     root.append(reviewsBlock(reviews))
   } catch (err) {
     clear(root)
-    root.append(errorState(err instanceof ApiError ? err.message : 'Could not load profile', () => renderProfile(root)))
+    root.append(
+      errorState(err instanceof ApiError ? err.message : 'Could not load profile', () =>
+        renderProfile(root),
+      ),
+    )
   }
 }
 
@@ -51,7 +66,9 @@ function headerBlock(me, profile) {
   return h(
     'div',
     { class: 'card me-head' },
-    h('div', { class: 'me-top' },
+    h(
+      'div',
+      { class: 'me-top' },
       h('h1', { class: 'me-name' }, me.display_name || me.email),
       h('button', { class: 'btn-ghost', onClick: doLogout }, 'Log out'),
     ),
@@ -63,13 +80,23 @@ function statsRow(avg, profile) {
   return h(
     'div',
     { class: 'me-stats' },
-    stat(avg, profile.rating_count ? `avg · ${profile.rating_count} review${profile.rating_count === 1 ? '' : 's'}` : 'no reviews yet'),
+    stat(
+      avg,
+      profile.rating_count
+        ? `avg · ${profile.rating_count} review${profile.rating_count === 1 ? '' : 's'}`
+        : 'no reviews yet',
+    ),
     stat(String(profile.total_gigs), profile.total_gigs === 1 ? 'gig done' : 'gigs done'),
   )
 }
 
 function stat(big, label) {
-  return h('div', { class: 'stat' }, h('div', { class: 'stat-big' }, big), h('div', { class: 'stat-label' }, label))
+  return h(
+    'div',
+    { class: 'stat' },
+    h('div', { class: 'stat-big' }, big),
+    h('div', { class: 'stat-label' }, label),
+  )
 }
 
 async function doLogout() {
@@ -110,7 +137,9 @@ function postedGigCard(g, root) {
   const card = h(
     'div',
     { class: 'card gig-row' },
-    h('div', { class: 'gig-row-top' },
+    h(
+      'div',
+      { class: 'gig-row-top' },
       h('span', { class: 'gig-title' }, g.task_type),
       statusPill(g.status),
     ),
@@ -126,7 +155,7 @@ function postedGigCard(g, root) {
       h(
         'div',
         { class: 'post-actions' },
-        h('button', { class: 'btn-ghost', onClick: () => onEditGig && onEditGig(g) }, 'Edit'),
+        h('button', { class: 'btn-ghost', onClick: () => onEditGig?.(g) }, 'Edit'),
         h('button', { class: 'btn-ghost danger', onClick: () => deleteGig(g, root) }, 'Delete'),
       ),
     )
@@ -151,7 +180,9 @@ function claimedGigCard(g, root) {
   const card = h(
     'div',
     { class: 'card gig-row' },
-    h('div', { class: 'gig-row-top' },
+    h(
+      'div',
+      { class: 'gig-row-top' },
       h('span', { class: 'gig-title' }, g.task_type),
       statusPill(g.status),
     ),
@@ -201,11 +232,17 @@ function reviewCard(r) {
   return h(
     'div',
     { class: 'card review' },
-    h('div', { class: 'review-top' },
+    h(
+      'div',
+      { class: 'review-top' },
       h('span', { class: 'review-stars' }, starsText(r.stars)),
       h('span', { class: 'review-date' }, fmtDate(r.created_at)),
     ),
-    h('div', { class: 'gig-meta' }, `${r.task_type}${r.neighborhood ? ' · ' + r.neighborhood : ''}`),
+    h(
+      'div',
+      { class: 'gig-meta' },
+      `${r.task_type}${r.neighborhood ? ` · ${r.neighborhood}` : ''}`,
+    ),
     r.body ? h('p', { class: 'review-body' }, r.body) : null,
     h('div', { class: 'review-by' }, `— ${r.hirer_name || 'hirer'}`),
   )

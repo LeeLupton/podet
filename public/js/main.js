@@ -1,12 +1,12 @@
 // Bootstrap: auth gate, bottom-tab navigation, and wiring between view modules.
 // Views talk to each other only through the small setters exposed here.
 
-import { getUser, refresh, login, register } from './auth.js'
-import { h, clear, toast } from './ui.js'
-import { renderFeed, resetFeed } from './feed.js'
+import { getUser, login, refresh, register } from './auth.js'
 import { renderBoard, setOnTurnIntoGig } from './board.js'
-import { renderPostForm, setPrefill, setOnPosted } from './post.js'
-import { renderProfile, setOnLoggedOut, setOnEditGig } from './profile.js'
+import { renderFeed, resetFeed } from './feed.js'
+import { renderPostForm, setOnPosted, setPrefill } from './post.js'
+import { renderProfile, setOnEditGig, setOnLoggedOut } from './profile.js'
+import { clear, h, toast } from './ui.js'
 
 const VIEWS = {
   nearby: { el: () => document.getElementById('view-nearby'), render: renderFeed },
@@ -48,9 +48,26 @@ function renderGate(gate) {
   clear(gate)
   let mode = 'login' // or 'register'
 
-  const email = h('input', { class: 'input', type: 'email', placeholder: 'you@example.com', autocomplete: 'email', required: true })
-  const password = h('input', { class: 'input', type: 'password', placeholder: 'Password (8+ chars)', autocomplete: 'current-password', required: true })
-  const name = h('input', { class: 'input', type: 'text', placeholder: 'Display name', autocomplete: 'name' })
+  const email = h('input', {
+    class: 'input',
+    type: 'email',
+    placeholder: 'you@example.com',
+    autocomplete: 'email',
+    required: true,
+  })
+  const password = h('input', {
+    class: 'input',
+    type: 'password',
+    placeholder: 'Password (8+ chars)',
+    autocomplete: 'current-password',
+    required: true,
+  })
+  const name = h('input', {
+    class: 'input',
+    type: 'text',
+    placeholder: 'Display name',
+    autocomplete: 'name',
+  })
   const nameWrap = h('div', { class: 'hidden' }, name)
   const submit = h('button', { class: 'btn-primary', type: 'submit' }, 'Log in')
   const toggle = h('button', { class: 'link-btn', type: 'button' }, 'New here? Create an account')
@@ -129,7 +146,6 @@ setOnLoggedOut(() => {
 for (const btn of document.querySelectorAll('#tabbar .tab')) {
   btn.addEventListener('click', () => navigate(btn.dataset.tab))
 }
-
 // Boot.
 ;(async () => {
   await refresh()

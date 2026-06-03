@@ -1,10 +1,10 @@
 // The Board: observations & suggestions that aren't paid tasks but can graduate
 // into one. List, create, comment, toggle "I'll help", and "Turn into a gig".
 
-import { api, ApiError } from './api.js'
+import { ApiError, api } from './api.js'
 import { getUser } from './auth.js'
-import { h, clear, toast, spinner, errorState, emptyState, fmtDate } from './ui.js'
 import { nameLink } from './profile.js'
+import { clear, emptyState, errorState, fmtDate, h, spinner, toast } from './ui.js'
 
 // main.js wires this so "Turn into a gig" can prefill the Post screen and switch tabs.
 let onTurnIntoGig = null
@@ -204,7 +204,14 @@ async function renderExpanded(p, wrap, reloadList) {
   // owner controls
   if (me && full.author_id === me.id) {
     actions.append(
-      h('button', { class: 'btn-ghost', onClick: () => openEditPost(full, wrap, reloadList, () => refresh()) }, 'Edit'),
+      h(
+        'button',
+        {
+          class: 'btn-ghost',
+          onClick: () => openEditPost(full, wrap, reloadList, () => refresh()),
+        },
+        'Edit',
+      ),
       h(
         'button',
         {
@@ -226,7 +233,8 @@ async function renderExpanded(p, wrap, reloadList) {
 
   // comments
   const commentList = h('div', { class: 'comments' })
-  for (const cm of full.comments || []) commentList.append(commentRow(cm, me, reloadList, () => refresh()))
+  for (const cm of full.comments || [])
+    commentList.append(commentRow(cm, me, reloadList, () => refresh()))
 
   const commentInput = h('input', { class: 'input', type: 'text', placeholder: 'Add a comment…' })
   const commentForm = h(
@@ -296,7 +304,11 @@ function openEditPost(full, wrap, reloadList, refresh) {
   const area = h('input', { class: 'input', type: 'text', placeholder: 'Area label (optional)' })
   if (full.area_label) area.value = full.area_label
   const save = h('button', { class: 'btn-primary', type: 'submit' }, 'Save changes')
-  const cancel = h('button', { class: 'btn-ghost', type: 'button', onClick: () => refresh() }, 'Cancel')
+  const cancel = h(
+    'button',
+    { class: 'btn-ghost', type: 'button', onClick: () => refresh() },
+    'Cancel',
+  )
   const form = h(
     'form',
     {

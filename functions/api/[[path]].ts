@@ -10,8 +10,8 @@
 
 import { Hono } from 'hono'
 import { handle } from 'hono/cloudflare-pages'
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { sign, verify } from 'hono/jwt'
-import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { secureHeaders } from 'hono/secure-headers'
 
 type Env = {
@@ -64,7 +64,12 @@ function validateString(
  * Rate limiting — D1-backed fixed window, keyed by '<route>:<ip>'.
  * Works on the free tier with no extra binding. Returns true if allowed.
  * ------------------------------------------------------------------ */
-async function rateLimit(c: any, route: string, limit: number, windowSec: number): Promise<boolean> {
+async function rateLimit(
+  c: any,
+  route: string,
+  limit: number,
+  windowSec: number,
+): Promise<boolean> {
   const ip = c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown'
   const key = `${route}:${ip}`
   const now = Math.floor(Date.now() / 1000)
@@ -104,7 +109,11 @@ function b64decode(str: string): Uint8Array {
   return bytes
 }
 
-async function deriveBits(password: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
+async function deriveBits(
+  password: string,
+  salt: Uint8Array,
+  iterations: number,
+): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(password),
@@ -140,7 +149,7 @@ const DUMMY_PASSWORD_HASH = `pbkdf2$${PBKDF2_ITERATIONS}$${b64encode(new Uint8Ar
 async function verifyPassword(password: string, encoded: string): Promise<boolean> {
   const parts = encoded.split('$')
   if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false
-  const iterations = parseInt(parts[1], 10)
+  const iterations = Number.parseInt(parts[1], 10)
   if (!Number.isFinite(iterations)) return false
   const salt = b64decode(parts[2])
   const expected = b64decode(parts[3])
@@ -194,7 +203,7 @@ async function auth(c: any, next: any) {
   let token = getCookie(c, 'session')
   if (!token) {
     const header = c.req.header('Authorization')
-    if (header && header.startsWith('Bearer ')) token = header.slice(7)
+    if (header?.startsWith('Bearer ')) token = header.slice(7)
   }
   if (!token) return c.json({ error: 'unauthenticated' }, 401)
   try {
@@ -229,7 +238,9 @@ app.post('/register', async (c) => {
   if (!nameCheck.ok) return c.json({ error: 'display_name too long' }, 400)
   const display_name = nameCheck.value
 
-  const existing = await c.env.DB.prepare('select id from users where email = ?').bind(email).first()
+  const existing = await c.env.DB.prepare('select id from users where email = ?')
+    .bind(email)
+    .first()
   if (existing) return c.json({ error: 'email already registered' }, 409)
 
   const id = crypto.randomUUID()
@@ -254,7 +265,9 @@ app.post('/login', async (c) => {
   } catch {
     return c.json({ error: 'invalid body' }, 400)
   }
-  const email = String(body.email ?? '').trim().toLowerCase()
+  const email = String(body.email ?? '')
+    .trim()
+    .toLowerCase()
   const password = String(body.password ?? '')
   if (!email || !password) return c.json({ error: 'email and password required' }, 400)
 
@@ -269,7 +282,10 @@ app.post('/login', async (c) => {
   if (!user || !ok) return c.json({ error: 'invalid credentials' }, 401)
 
   const token = await issueSession(c, user.id)
-  return c.json({ token, user: { id: user.id, email: user.email, display_name: user.display_name } })
+  return c.json({
+    token,
+    user: { id: user.id, email: user.email, display_name: user.display_name },
+  })
 })
 
 app.post('/logout', (c) => {
@@ -296,9 +312,9 @@ app.get('/me', async (c) => {
 
 // Nearby AVAILABLE gigs: SQL bounding-box prefilter, JS Haversine refine + sort.
 app.get('/gigs/near', async (c) => {
-  const lat = parseFloat(c.req.query('lat') ?? '')
-  const lng = parseFloat(c.req.query('lng') ?? '')
-  const radius = parseFloat(c.req.query('radius') ?? '5')
+  const lat = Number.parseFloat(c.req.query('lat') ?? '')
+  const lng = Number.parseFloat(c.req.query('lng') ?? '')
+  const radius = Number.parseFloat(c.req.query('radius') ?? '5')
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     return c.json({ error: 'lat and lng required' }, 400)
   }
@@ -377,7 +393,10 @@ app.post('/gigs', async (c) => {
   const hoodCheck = validateString(b.neighborhood, LIMITS.neighborhood)
   const descCheck = validateString(b.description, LIMITS.description)
   if (!taskCheck.ok || !hoodCheck.ok || !descCheck.ok) {
-    return c.json({ error: 'task_type, neighborhood and description required (and within length limits)' }, 400)
+    return c.json(
+      { error: 'task_type, neighborhood and description required (and within length limits)' },
+      400,
+    )
   }
   const task_type = taskCheck.value as string
   const neighborhood = hoodCheck.value as string
@@ -394,7 +413,14 @@ app.post('/gigs', async (c) => {
   if (!Number.isFinite(est_hours) || est_hours <= 0 || est_hours > 10_000) {
     return c.json({ error: 'est_hours must be positive' }, 400)
   }
-  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+  if (
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lng) ||
+    lat < -90 ||
+    lat > 90 ||
+    lng < -180 ||
+    lng > 180
+  ) {
     return c.json({ error: 'valid lat and lng required' }, 400)
   }
 
@@ -403,7 +429,18 @@ app.post('/gigs', async (c) => {
     `insert into gigs (id, task_type, neighborhood, cash_payout, est_hours, lat, lng, description, posted_by, from_post_id)
      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, task_type, neighborhood, cash_payout, est_hours, lat, lng, description, userId, from_post_id)
+    .bind(
+      id,
+      task_type,
+      neighborhood,
+      cash_payout,
+      est_hours,
+      lat,
+      lng,
+      description,
+      userId,
+      from_post_id,
+    )
     .run()
   return c.json({ id }, 201)
 })
@@ -445,22 +482,19 @@ app.post('/gigs/:id/complete', async (c) => {
 
   const gig: any = await c.env.DB.prepare('select * from gigs where id = ?').bind(id).first()
   if (!gig) return c.json({ error: 'not found' }, 404)
-  if (gig.posted_by !== userId) return c.json({ error: 'only the poster can complete this gig' }, 403)
+  if (gig.posted_by !== userId)
+    return c.json({ error: 'only the poster can complete this gig' }, 403)
   if (gig.status !== 'CLAIMED') return c.json({ error: 'gig is not in a claimed state' }, 409)
 
   const reviewId = crypto.randomUUID()
   await c.env.DB.batch([
     c.env.DB.prepare(`update gigs set status = 'COMPLETED' where id = ?`).bind(id),
-    c.env.DB
-      .prepare(
-        `insert into reviews (id, gig_id, worker_id, hirer_id, stars, body) values (?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(reviewId, id, gig.claimed_by, userId, rating, review),
-    c.env.DB
-      .prepare(
-        `update users set total_gigs = total_gigs + 1, rating_sum = rating_sum + ?, rating_count = rating_count + 1 where id = ?`,
-      )
-      .bind(rating, gig.claimed_by),
+    c.env.DB.prepare(
+      `insert into reviews (id, gig_id, worker_id, hirer_id, stars, body) values (?, ?, ?, ?, ?, ?)`,
+    ).bind(reviewId, id, gig.claimed_by, userId, rating, review),
+    c.env.DB.prepare(
+      `update users set total_gigs = total_gigs + 1, rating_sum = rating_sum + ?, rating_count = rating_count + 1 where id = ?`,
+    ).bind(rating, gig.claimed_by),
   ])
   return c.json({ ok: true })
 })
@@ -479,7 +513,10 @@ app.put('/gigs/:id', async (c) => {
   const hoodCheck = validateString(b.neighborhood, LIMITS.neighborhood)
   const descCheck = validateString(b.description, LIMITS.description)
   if (!taskCheck.ok || !hoodCheck.ok || !descCheck.ok) {
-    return c.json({ error: 'task_type, neighborhood and description required (and within length limits)' }, 400)
+    return c.json(
+      { error: 'task_type, neighborhood and description required (and within length limits)' },
+      400,
+    )
   }
   const cash_payout = Math.round(Number(b.cash_payout))
   const est_hours = Number(b.est_hours)
@@ -491,14 +528,31 @@ app.put('/gigs/:id', async (c) => {
   if (!Number.isFinite(est_hours) || est_hours <= 0 || est_hours > 10_000) {
     return c.json({ error: 'est_hours must be positive' }, 400)
   }
-  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+  if (
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lng) ||
+    lat < -90 ||
+    lat > 90 ||
+    lng < -180 ||
+    lng > 180
+  ) {
     return c.json({ error: 'valid lat and lng required' }, 400)
   }
   const res = await c.env.DB.prepare(
     `update gigs set task_type = ?, neighborhood = ?, description = ?, cash_payout = ?, est_hours = ?, lat = ?, lng = ?
       where id = ? and posted_by = ? and status = 'AVAILABLE'`,
   )
-    .bind(taskCheck.value, hoodCheck.value, descCheck.value, cash_payout, est_hours, lat, lng, id, userId)
+    .bind(
+      taskCheck.value,
+      hoodCheck.value,
+      descCheck.value,
+      cash_payout,
+      est_hours,
+      lat,
+      lng,
+      id,
+      userId,
+    )
     .run()
   if (res.meta.changes !== 1) {
     return c.json({ error: 'not found, not yours, or no longer editable' }, 403)
@@ -567,7 +621,8 @@ app.post('/posts', async (c) => {
   }
   const bodyCheck = validateString(b.body, LIMITS.post_body)
   const areaCheck = validateString(b.area_label, LIMITS.area_label, { required: false })
-  if (!bodyCheck.ok || !bodyCheck.value) return c.json({ error: 'body required (within length limit)' }, 400)
+  if (!bodyCheck.ok || !bodyCheck.value)
+    return c.json({ error: 'body required (within length limit)' }, 400)
   if (!areaCheck.ok) return c.json({ error: 'area_label too long' }, 400)
   const body = bodyCheck.value
   const area_label = areaCheck.value
@@ -620,7 +675,8 @@ app.put('/posts/:id', async (c) => {
   }
   const bodyCheck = validateString(b.body, LIMITS.post_body)
   const areaCheck = validateString(b.area_label, LIMITS.area_label, { required: false })
-  if (!bodyCheck.ok || !bodyCheck.value) return c.json({ error: 'body required (within length limit)' }, 400)
+  if (!bodyCheck.ok || !bodyCheck.value)
+    return c.json({ error: 'body required (within length limit)' }, 400)
   if (!areaCheck.ok) return c.json({ error: 'area_label too long' }, 400)
   const body = bodyCheck.value
   const area_label = areaCheck.value
@@ -640,7 +696,9 @@ app.delete('/posts/:id', async (c) => {
   const res = await c.env.DB.prepare(`delete from posts where id = ? and author_id = ?`)
     .bind(id, userId)
     .run()
-  if (res.meta.changes !== 1) return c.json({ error: 'not found or not yours' }, 403)
+  // meta.changes counts cascade-deleted comments/interest too, so a successful
+  // owner delete is >= 1; a non-owner (or missing) match is 0.
+  if (res.meta.changes < 1) return c.json({ error: 'not found or not yours' }, 403)
   return c.json({ ok: true })
 })
 
@@ -654,7 +712,8 @@ app.post('/posts/:id/comments', async (c) => {
     return c.json({ error: 'invalid body' }, 400)
   }
   const bodyCheck = validateString(b.body, LIMITS.comment_body)
-  if (!bodyCheck.ok || !bodyCheck.value) return c.json({ error: 'body required (within length limit)' }, 400)
+  if (!bodyCheck.ok || !bodyCheck.value)
+    return c.json({ error: 'body required (within length limit)' }, 400)
   const body = bodyCheck.value
   const post = await c.env.DB.prepare('select id from posts where id = ?').bind(postId).first()
   if (!post) return c.json({ error: 'post not found' }, 404)
@@ -678,7 +737,8 @@ app.put('/comments/:id', async (c) => {
     return c.json({ error: 'invalid body' }, 400)
   }
   const bodyCheck = validateString(b.body, LIMITS.comment_body)
-  if (!bodyCheck.ok || !bodyCheck.value) return c.json({ error: 'body required (within length limit)' }, 400)
+  if (!bodyCheck.ok || !bodyCheck.value)
+    return c.json({ error: 'body required (within length limit)' }, 400)
   const body = bodyCheck.value
   const res = await c.env.DB.prepare(
     `update post_comments set body = ? where id = ? and author_id = ?`,
@@ -706,9 +766,7 @@ app.post('/posts/:id/interest', async (c) => {
   const postId = c.req.param('id')
   const post = await c.env.DB.prepare('select id from posts where id = ?').bind(postId).first()
   if (!post) return c.json({ error: 'post not found' }, 404)
-  await c.env.DB.prepare(
-    `insert or ignore into post_interest (post_id, user_id) values (?, ?)`,
-  )
+  await c.env.DB.prepare(`insert or ignore into post_interest (post_id, user_id) values (?, ?)`)
     .bind(postId, userId)
     .run()
   return c.json({ ok: true, interested: true })
@@ -770,3 +828,6 @@ app.onError((err, c) => {
 })
 
 export const onRequest = handle(app)
+
+// Exported for integration tests (call app.request(path, init, env) directly).
+export { app }
