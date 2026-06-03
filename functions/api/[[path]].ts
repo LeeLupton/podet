@@ -18,6 +18,7 @@ import { bboxDeltas, haversineMiles } from '../lib/geo'
 import { clampLimit, parseBefore } from '../lib/pagination'
 import { DUMMY_PASSWORD_HASH, hashPassword, verifyPassword } from '../lib/password'
 import { MAX_PHOTOS_PER_GIG, checkImageUpload, photoKey } from '../lib/photos'
+import { sendWebPush } from '../lib/push'
 import { rateLimitKey, windowStart } from '../lib/ratelimit'
 import { LIMITS, isValidLatLng, isValidRating, validateString } from '../lib/validate'
 
@@ -25,6 +26,9 @@ type Env = {
   DB: D1Database
   SESSION_SECRET: string
   PHOTOS: R2Bucket
+  VAPID_PUBLIC_KEY?: string
+  VAPID_PRIVATE_KEY?: string // JWK JSON string
+  VAPID_SUBJECT?: string
 }
 
 type Vars = {
@@ -77,6 +81,53 @@ async function issueSession(c: any, userId: string): Promise<string> {
     maxAge: SESSION_TTL,
   })
   return token
+}
+
+/* ------------------------------------------------------------------ *
+ * Web Push — best-effort fan-out to a user's subscriptions. Never throws to
+ * the caller; prunes dead subscriptions on 404/410. No-op if VAPID is unset.
+ * ------------------------------------------------------------------ */
+async function notifyUser(c: any, userId: string, payload: any): Promise<void> {
+  const pub = c.env.VAPID_PUBLIC_KEY
+  const priv = c.env.VAPID_PRIVATE_KEY
+  if (!pub || !priv) return
+  let privateJwk: JsonWebKey
+  try {
+    privateJwk = JSON.parse(priv)
+  } catch {
+    return
+  }
+  const subs = await c.env.DB.prepare(
+    'select endpoint, p256dh, auth from push_subscriptions where user_id = ?',
+  )
+    .bind(userId)
+    .all()
+  const body = JSON.stringify(payload)
+  const subject = c.env.VAPID_SUBJECT || 'mailto:podnet@example.com'
+  await Promise.all(
+    (subs.results as any[]).map(async (s) => {
+      try {
+        const res = await sendWebPush(s, body, { publicKey: pub, privateJwk, subject })
+        if (res.status === 404 || res.status === 410) {
+          await c.env.DB.prepare('delete from push_subscriptions where endpoint = ?')
+            .bind(s.endpoint)
+            .run()
+        }
+      } catch {
+        // best-effort — a failed push must never affect the gig flow
+      }
+    }),
+  )
+}
+
+// Run a background task without blocking the response (no-op-safe in tests).
+function fireAndForget(c: any, promise: Promise<unknown>): void {
+  try {
+    c.executionCtx.waitUntil(promise)
+  } catch {
+    // no execution context (e.g. unit tests) — let it run detached
+    void promise
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -342,6 +393,20 @@ app.post('/gigs/:id/claim', async (c) => {
   if (res.meta.changes !== 1) {
     return c.json({ error: 'gig is unavailable or your own' }, 409)
   }
+  // Best-effort: tell the poster their gig was claimed.
+  const g: any = await c.env.DB.prepare('select posted_by, task_type from gigs where id = ?')
+    .bind(id)
+    .first()
+  if (g) {
+    fireAndForget(
+      c,
+      notifyUser(c, g.posted_by, {
+        title: 'Your gig was claimed',
+        body: `${g.task_type} — someone is on it`,
+        url: '/',
+      }),
+    )
+  }
   return c.json({ ok: true })
 })
 
@@ -380,6 +445,15 @@ app.post('/gigs/:id/complete', async (c) => {
       `update users set total_gigs = total_gigs + 1, rating_sum = rating_sum + ?, rating_count = rating_count + 1 where id = ?`,
     ).bind(rating, gig.claimed_by),
   ])
+  // Best-effort: tell the worker they were paid and rated.
+  fireAndForget(
+    c,
+    notifyUser(c, gig.claimed_by, {
+      title: `You were rated ${rating}★`,
+      body: `${gig.task_type} — paid ${gig.cash_payout}`,
+      url: '/',
+    }),
+  )
   return c.json({ ok: true })
 })
 
@@ -798,6 +872,51 @@ app.get('/users/:id/reviews', async (c) => {
   )
   for (const r of reviews) r.photos = photos.get(r.gig_id) ?? []
   return c.json(reviews)
+})
+
+/* ============================ WEB PUSH =========================== */
+
+// The VAPID public key the client needs to subscribe (null if push isn't configured).
+app.get('/push/key', (c) => c.json({ key: c.env.VAPID_PUBLIC_KEY ?? null }))
+
+// Store (or refresh) the caller's push subscription.
+app.post('/push/subscribe', async (c) => {
+  const userId = c.get('userId')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const endpoint = b?.endpoint
+  const p256dh = b?.keys?.p256dh
+  const auth = b?.keys?.auth
+  if (typeof endpoint !== 'string' || !p256dh || !auth) {
+    return c.json({ error: 'endpoint and keys required' }, 400)
+  }
+  await c.env.DB.prepare(
+    `insert into push_subscriptions (endpoint, user_id, p256dh, auth) values (?, ?, ?, ?)
+     on conflict(endpoint) do update set user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth`,
+  )
+    .bind(endpoint, userId, p256dh, auth)
+    .run()
+  return c.json({ ok: true }, 201)
+})
+
+// Remove a subscription (the caller's own).
+app.delete('/push/subscribe', async (c) => {
+  const userId = c.get('userId')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  if (typeof b?.endpoint !== 'string') return c.json({ error: 'endpoint required' }, 400)
+  await c.env.DB.prepare('delete from push_subscriptions where endpoint = ? and user_id = ?')
+    .bind(b.endpoint, userId)
+    .run()
+  return c.json({ ok: true })
 })
 
 /* ============================ FALLBACKS =========================== */

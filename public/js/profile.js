@@ -50,6 +50,7 @@ async function load(root) {
     ])
     clear(root)
     root.append(headerBlock(me, profile))
+    root.append(notificationsBlock())
     root.append(gigsBlock(mine, root))
     root.append(reviewsBlock(reviews, me.id))
   } catch (err) {
@@ -315,5 +316,62 @@ export async function openUserProfile(userId) {
   } catch (err) {
     clear(body)
     body.append(errorState(err instanceof ApiError ? err.message : 'Could not load profile', null))
+  }
+}
+
+/* --- Web push opt-in --- */
+
+function pushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
+}
+
+function notificationsBlock() {
+  if (!pushSupported()) return document.createTextNode('')
+  const btn = h('button', { class: 'btn-ghost' }, '🔔 Enable notifications')
+  if (Notification.permission === 'granted') btn.textContent = '🔔 Notifications on'
+  btn.addEventListener('click', () => enableNotifications(btn))
+  return h(
+    'div',
+    { class: 'card' },
+    h('div', { class: 'gig-meta' }, 'Get notified when your gig is claimed or your work is rated.'),
+    btn,
+  )
+}
+
+function urlBase64ToUint8Array(base64) {
+  const padding = '='.repeat((4 - (base64.length % 4)) % 4)
+  const b64 = (base64 + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const raw = atob(b64)
+  const arr = new Uint8Array(raw.length)
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i)
+  return arr
+}
+
+async function enableNotifications(btn) {
+  btn.disabled = true
+  try {
+    const { key } = await api.pushKey()
+    if (!key) {
+      toast('Notifications aren’t configured on the server yet', 'error')
+      return
+    }
+    const perm = await Notification.requestPermission()
+    if (perm !== 'granted') {
+      toast('Notifications permission denied', 'error')
+      return
+    }
+    const reg = await navigator.serviceWorker.register('/sw.js')
+    await navigator.serviceWorker.ready
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(key),
+    })
+    await api.subscribePush(sub.toJSON())
+    btn.textContent = '🔔 Notifications on'
+    toast('Notifications enabled')
+  } catch (err) {
+    toast(err instanceof ApiError ? err.message : 'Could not enable notifications', 'error')
+  } finally {
+    btn.disabled = false
   }
 }

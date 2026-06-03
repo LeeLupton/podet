@@ -3,7 +3,7 @@
 
 import { getUser, login, refresh, register } from './auth.js'
 import { renderBoard, setOnTurnIntoGig } from './board.js'
-import { renderFeed, resetFeed } from './feed.js'
+import { renderFeed, resetFeed, stopPolling } from './feed.js'
 import { renderPostForm, setOnPosted, setPrefill } from './post.js'
 import { renderProfile, setOnEditGig, setOnLoggedOut } from './profile.js'
 import { clear, h, toast } from './ui.js'
@@ -19,6 +19,8 @@ let active = null
 
 function navigate(tab) {
   active = tab
+  // The live-feed interval only runs while Nearby is the active tab.
+  if (tab !== 'nearby') stopPolling()
   for (const [id, v] of Object.entries(VIEWS)) {
     v.el().classList.toggle('hidden', id !== tab)
   }

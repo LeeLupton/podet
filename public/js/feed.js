@@ -47,14 +47,36 @@ export function renderFeed(root) {
     mounted = true
     // Re-query when the tab/window regains focus.
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && isActive(root)) load()
+      if (document.hidden) stopPolling()
+      else if (isActive(root)) {
+        load()
+        startPolling(root)
+      }
     })
     window.addEventListener('focus', () => {
       if (isActive(root)) load()
     })
   }
 
+  startPolling(root)
   ensureCoordsThenLoad()
+}
+
+// Near-realtime: while Nearby is visible+active, re-query on an interval. This is
+// the single-deployment alternative to a push feed — no extra Worker/binding.
+const POLL_MS = 20000
+let pollTimer = null
+function startPolling(root) {
+  stopPolling()
+  pollTimer = setInterval(() => {
+    if (!document.hidden && isActive(root) && coords) load()
+  }, POLL_MS)
+}
+export function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
 }
 
 function isActive(root) {
@@ -180,6 +202,7 @@ function mapLink(g) {
 
 // Let other modules invalidate cached coords (e.g. after logout).
 export function resetFeed() {
+  stopPolling()
   coords = null
   radius = DEFAULT_RADIUS
 }
