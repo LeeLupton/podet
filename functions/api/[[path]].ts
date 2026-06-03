@@ -14,9 +14,17 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { sign, verify } from 'hono/jwt'
 import { secureHeaders } from 'hono/secure-headers'
 
+import { bboxDeltas, haversineMiles } from '../lib/geo'
+import { clampLimit, parseBefore } from '../lib/pagination'
+import { DUMMY_PASSWORD_HASH, hashPassword, verifyPassword } from '../lib/password'
+import { MAX_PHOTOS_PER_GIG, checkImageUpload, photoKey } from '../lib/photos'
+import { rateLimitKey, windowStart } from '../lib/ratelimit'
+import { LIMITS, isValidLatLng, isValidRating, validateString } from '../lib/validate'
+
 type Env = {
   DB: D1Database
   SESSION_SECRET: string
+  PHOTOS: R2Bucket
 }
 
 type Vars = {
@@ -32,38 +40,8 @@ app.use('*', secureHeaders())
 const SESSION_DAYS = 30
 const SESSION_TTL = 60 * 60 * 24 * SESSION_DAYS
 
-// Input length caps — reject oversized payloads before they hit the DB.
-const LIMITS = {
-  email: 254,
-  password: 200,
-  display_name: 60,
-  task_type: 80,
-  neighborhood: 80,
-  description: 2000,
-  post_body: 1000,
-  comment_body: 1000,
-  area_label: 120,
-  review_body: 1000,
-}
-
-// Returns a trimmed string, or null if missing/too long/blank-when-required.
-function validateString(
-  value: unknown,
-  max: number,
-  { required = true } = {},
-): { ok: true; value: string | null } | { ok: false } {
-  if (value == null || value === '') return required ? { ok: false } : { ok: true, value: null }
-  if (typeof value !== 'string') return { ok: false }
-  const trimmed = value.trim()
-  if (required && !trimmed) return { ok: false }
-  if (trimmed.length > max) return { ok: false }
-  return { ok: true, value: trimmed || null }
-}
-
-/* ------------------------------------------------------------------ *
- * Rate limiting — D1-backed fixed window, keyed by '<route>:<ip>'.
- * Works on the free tier with no extra binding. Returns true if allowed.
- * ------------------------------------------------------------------ */
+// Rate limiting — D1-backed fixed window (pure key/window math in ../lib/ratelimit).
+// Works on the free tier with no extra binding. Returns true if allowed.
 async function rateLimit(
   c: any,
   route: string,
@@ -71,9 +49,8 @@ async function rateLimit(
   windowSec: number,
 ): Promise<boolean> {
   const ip = c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown'
-  const key = `${route}:${ip}`
-  const now = Math.floor(Date.now() / 1000)
-  const windowStart = now - (now % windowSec)
+  const key = rateLimitKey(route, ip)
+  const start = windowStart(Math.floor(Date.now() / 1000), windowSec)
   // Upsert: start a fresh window when the stored one is stale, else increment.
   const res = await c.env.DB.prepare(
     `insert into rate_limits (key, count, window_start) values (?, 1, ?)
@@ -82,86 +59,13 @@ async function rateLimit(
        window_start = excluded.window_start
      returning count`,
   )
-    .bind(key, windowStart)
+    .bind(key, start)
     .first()
   return ((res as any)?.count ?? 1) <= limit
 }
 
-/* ------------------------------------------------------------------ *
- * Password hashing — PBKDF2-HMAC-SHA256 via Web Crypto.
- * Encoded as `pbkdf2$<iterations>$<saltB64>$<hashB64>`. Never store or
- * compare plaintext; login uses a constant-time compare.
- * Upgrade path: argon2id via WASM (the encoding scheme prefix allows it).
- * ------------------------------------------------------------------ */
-const PBKDF2_ITERATIONS = 100_000
-const PBKDF2_HASH_BITS = 256
-
-function b64encode(bytes: Uint8Array): string {
-  let s = ''
-  for (const b of bytes) s += String.fromCharCode(b)
-  return btoa(s)
-}
-
-function b64decode(str: string): Uint8Array {
-  const s = atob(str)
-  const bytes = new Uint8Array(s.length)
-  for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i)
-  return bytes
-}
-
-async function deriveBits(
-  password: string,
-  salt: Uint8Array,
-  iterations: number,
-): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits'],
-  )
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
-    key,
-    PBKDF2_HASH_BITS,
-  )
-  return new Uint8Array(bits)
-}
-
-async function hashPassword(password: string): Promise<string> {
-  const salt = crypto.getRandomValues(new Uint8Array(16))
-  const hash = await deriveBits(password, salt, PBKDF2_ITERATIONS)
-  return `pbkdf2$${PBKDF2_ITERATIONS}$${b64encode(salt)}$${b64encode(hash)}`
-}
-
-function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false
-  let diff = 0
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i]
-  return diff === 0
-}
-
-// A well-formed dummy hash so login can run the same PBKDF2 work for unknown
-// emails — equalizing response time so it can't be used to enumerate accounts.
-const DUMMY_PASSWORD_HASH = `pbkdf2$${PBKDF2_ITERATIONS}$${b64encode(new Uint8Array(16))}$${b64encode(new Uint8Array(32))}`
-
-async function verifyPassword(password: string, encoded: string): Promise<boolean> {
-  const parts = encoded.split('$')
-  if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false
-  const iterations = Number.parseInt(parts[1], 10)
-  if (!Number.isFinite(iterations)) return false
-  const salt = b64decode(parts[2])
-  const expected = b64decode(parts[3])
-  const actual = await deriveBits(password, salt, iterations)
-  return timingSafeEqual(actual, expected)
-}
-
-/* ------------------------------------------------------------------ *
- * Sessions — a JWT signed with env.SESSION_SECRET, delivered as an
- * HttpOnly + Secure + SameSite cookie (and returned in the body so any
- * non-browser client can send it as `Authorization: Bearer`).
- * ------------------------------------------------------------------ */
+// Sessions — a JWT signed with env.SESSION_SECRET, delivered as an HttpOnly +
+// Secure + SameSite cookie (and returned in the body for Bearer clients).
 async function issueSession(c: any, userId: string): Promise<string> {
   const exp = Math.floor(Date.now() / 1000) + SESSION_TTL
   const token = await sign({ sub: userId, exp }, c.env.SESSION_SECRET, 'HS256')
@@ -173,24 +77,6 @@ async function issueSession(c: any, userId: string): Promise<string> {
     maxAge: SESSION_TTL,
   })
   return token
-}
-
-/* ------------------------------------------------------------------ *
- * Geo helpers — SQLite has no guaranteed trig functions, so the SQL
- * prefilters by an indexable bounding box and the exact distance is
- * computed here with a JS Haversine.
- * ------------------------------------------------------------------ */
-const MILES_PER_DEG_LAT = 69
-
-function haversineMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 3958.8 // Earth radius in miles
-  const toRad = (d: number) => (d * Math.PI) / 180
-  const dLat = toRad(lat2 - lat1)
-  const dLng = toRad(lng2 - lng1)
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2
-  return 2 * R * Math.asin(Math.sqrt(a))
 }
 
 /* ------------------------------------------------------------------ *
@@ -320,9 +206,7 @@ app.get('/gigs/near', async (c) => {
   }
   const r = Number.isFinite(radius) && radius > 0 ? radius : 5
 
-  const latDelta = r / MILES_PER_DEG_LAT
-  const cosLat = Math.cos((lat * Math.PI) / 180)
-  const lngDelta = r / (MILES_PER_DEG_LAT * (Math.abs(cosLat) < 1e-6 ? 1e-6 : Math.abs(cosLat)))
+  const { latDelta, lngDelta } = bboxDeltas(lat, r)
 
   const rows = await c.env.DB.prepare(
     `select g.id, g.status, g.task_type, g.neighborhood, g.cash_payout, g.est_hours,
@@ -377,7 +261,14 @@ app.get('/gigs/mine', async (c) => {
   )
     .bind(userId)
     .all()
-  return c.json({ posted: posted.results, claimed: claimed.results })
+  // Attach photos to the gigs you posted (shown on your profile).
+  const postedRows = posted.results as any[]
+  const photos = await loadPhotosByGig(
+    c.env.DB,
+    postedRows.map((g) => g.id),
+  )
+  for (const g of postedRows) g.photos = photos.get(g.id) ?? []
+  return c.json({ posted: postedRows, claimed: claimed.results })
 })
 
 // Create a gig — posted_by = session user.
@@ -413,14 +304,7 @@ app.post('/gigs', async (c) => {
   if (!Number.isFinite(est_hours) || est_hours <= 0 || est_hours > 10_000) {
     return c.json({ error: 'est_hours must be positive' }, 400)
   }
-  if (
-    !Number.isFinite(lat) ||
-    !Number.isFinite(lng) ||
-    lat < -90 ||
-    lat > 90 ||
-    lng < -180 ||
-    lng > 180
-  ) {
+  if (!isValidLatLng(lat, lng)) {
     return c.json({ error: 'valid lat and lng required' }, 400)
   }
 
@@ -476,7 +360,7 @@ app.post('/gigs/:id/complete', async (c) => {
   const reviewCheck = validateString(b.review, LIMITS.review_body, { required: false })
   if (!reviewCheck.ok) return c.json({ error: 'review too long' }, 400)
   const review = reviewCheck.value
-  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+  if (!isValidRating(rating)) {
     return c.json({ error: 'rating must be an integer 1-5' }, 400)
   }
 
@@ -528,14 +412,7 @@ app.put('/gigs/:id', async (c) => {
   if (!Number.isFinite(est_hours) || est_hours <= 0 || est_hours > 10_000) {
     return c.json({ error: 'est_hours must be positive' }, 400)
   }
-  if (
-    !Number.isFinite(lat) ||
-    !Number.isFinite(lng) ||
-    lat < -90 ||
-    lat > 90 ||
-    lng < -180 ||
-    lng > 180
-  ) {
+  if (!isValidLatLng(lat, lng)) {
     return c.json({ error: 'valid lat and lng required' }, 400)
   }
   const res = await c.env.DB.prepare(
@@ -592,10 +469,102 @@ app.post('/gigs/:id/abandon', async (c) => {
   return c.json({ ok: true })
 })
 
+/* ============================== PHOTOS ============================= */
+
+// Load photos for a set of gigs → Map<gigId, [{id, key}]>.
+async function loadPhotosByGig(db: D1Database, gigIds: string[]): Promise<Map<string, any[]>> {
+  const map = new Map<string, any[]>()
+  if (gigIds.length === 0) return map
+  const placeholders = gigIds.map(() => '?').join(',')
+  const rows = await db
+    .prepare(
+      `select id, gig_id, r2_key from gig_photos where gig_id in (${placeholders}) order by created_at asc`,
+    )
+    .bind(...gigIds)
+    .all()
+  for (const p of rows.results as any[]) {
+    const list = map.get(p.gig_id) ?? []
+    list.push({ id: p.id, key: p.r2_key })
+    map.set(p.gig_id, list)
+  }
+  return map
+}
+
+// Upload a photo of the finished work — hirer only, while CLAIMED or COMPLETED.
+app.post('/gigs/:id/photos', async (c) => {
+  const userId = c.get('userId')
+  const id = c.req.param('id')
+  const gig: any = await c.env.DB.prepare('select posted_by, status from gigs where id = ?')
+    .bind(id)
+    .first()
+  if (!gig) return c.json({ error: 'not found' }, 404)
+  if (gig.posted_by !== userId) return c.json({ error: 'only the hirer can add photos' }, 403)
+  if (gig.status !== 'CLAIMED' && gig.status !== 'COMPLETED') {
+    return c.json({ error: 'photos can be added once the gig is claimed' }, 409)
+  }
+
+  const contentType = c.req.header('content-type')
+  const buf = await c.req.arrayBuffer()
+  const check = checkImageUpload(contentType, buf.byteLength)
+  if (!check.ok) return c.json({ error: check.reason }, 400)
+
+  const countRow: any = await c.env.DB.prepare(
+    'select count(*) as n from gig_photos where gig_id = ?',
+  )
+    .bind(id)
+    .first()
+  if ((countRow?.n ?? 0) >= MAX_PHOTOS_PER_GIG) {
+    return c.json({ error: `at most ${MAX_PHOTOS_PER_GIG} photos per gig` }, 409)
+  }
+
+  const photoId = crypto.randomUUID()
+  const key = photoKey(id, photoId, contentType as string)
+  await c.env.PHOTOS.put(key, buf, { httpMetadata: { contentType: contentType as string } })
+  await c.env.DB.prepare(
+    'insert into gig_photos (id, gig_id, uploader_id, r2_key) values (?, ?, ?, ?)',
+  )
+    .bind(photoId, id, userId, key)
+    .run()
+  return c.json({ id: photoId, key }, 201)
+})
+
+// Remove a photo — the hirer who owns the gig.
+app.delete('/gigs/:id/photos/:photoId', async (c) => {
+  const userId = c.get('userId')
+  const id = c.req.param('id')
+  const photoId = c.req.param('photoId')
+  const row: any = await c.env.DB.prepare(
+    `select p.r2_key from gig_photos p join gigs g on g.id = p.gig_id
+      where p.id = ? and p.gig_id = ? and g.posted_by = ?`,
+  )
+    .bind(photoId, id, userId)
+    .first()
+  if (!row) return c.json({ error: 'not found or not yours' }, 403)
+  await c.env.PHOTOS.delete(row.r2_key)
+  await c.env.DB.prepare('delete from gig_photos where id = ?').bind(photoId).run()
+  return c.json({ ok: true })
+})
+
+// Serve an image from R2. Behind auth (same-origin <img> sends the cookie).
+// The key is a wildcard so it can contain slashes (gigs/<id>/<uuid>.<ext>).
+app.get('/img/:key{.+}', async (c) => {
+  const key = c.req.param('key')
+  const obj = await c.env.PHOTOS.get(key)
+  if (!obj) return c.json({ error: 'not found' }, 404)
+  const headers = new Headers()
+  obj.writeHttpMetadata(headers)
+  headers.set('cache-control', 'public, max-age=31536000, immutable')
+  headers.set('etag', obj.httpEtag)
+  return new Response(obj.body, { headers })
+})
+
 /* ============================== BOARD ============================== */
 
 app.get('/posts', async (c) => {
   const userId = c.get('userId')
+  // Keyset pagination: ?before=<created_at>&limit (newest first).
+  const limit = clampLimit(c.req.query('limit'))
+  const before = parseBefore(c.req.query('before'))
   const rows = await c.env.DB.prepare(
     `select p.id, p.author_id, p.body, p.area_label, p.lat, p.lng, p.created_at,
             u.display_name as author_name,
@@ -604,9 +573,11 @@ app.get('/posts', async (c) => {
             exists(select 1 from post_interest pi where pi.post_id = p.id and pi.user_id = ?) as i_am_interested
        from posts p
        join users u on u.id = p.author_id
-      order by p.created_at desc`,
+      where (? is null or p.created_at < ?)
+      order by p.created_at desc
+      limit ?`,
   )
-    .bind(userId)
+    .bind(userId, before, before, limit)
     .all()
   return c.json(rows.results)
 })
@@ -804,6 +775,8 @@ app.get('/users/:id', async (c) => {
 })
 
 app.get('/users/:id/reviews', async (c) => {
+  const limit = clampLimit(c.req.query('limit'))
+  const before = parseBefore(c.req.query('before'))
   const rows = await c.env.DB.prepare(
     `select r.id, r.gig_id, r.stars, r.body, r.created_at,
             g.task_type, g.neighborhood,
@@ -811,12 +784,20 @@ app.get('/users/:id/reviews', async (c) => {
        from reviews r
        join gigs g on g.id = r.gig_id
        join users hu on hu.id = r.hirer_id
-      where r.worker_id = ?
-      order by r.created_at desc`,
+      where r.worker_id = ? and (? is null or r.created_at < ?)
+      order by r.created_at desc
+      limit ?`,
   )
-    .bind(c.req.param('id'))
+    .bind(c.req.param('id'), before, before, limit)
     .all()
-  return c.json(rows.results)
+  // Attach the work photos so they show in the worker's portfolio.
+  const reviews = rows.results as any[]
+  const photos = await loadPhotosByGig(
+    c.env.DB,
+    reviews.map((r) => r.gig_id),
+  )
+  for (const r of reviews) r.photos = photos.get(r.gig_id) ?? []
+  return c.json(reviews)
 })
 
 /* ============================ FALLBACKS =========================== */

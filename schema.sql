@@ -67,6 +67,17 @@ create table if not exists post_interest (
   primary key (post_id, user_id)
 );
 
+-- GIG PHOTOS — images of completed work, attached to a gig by the hirer at
+-- review time. Shown on BOTH the worker's portfolio and the hirer's profile.
+-- The bytes live in R2 (env.PHOTOS); only the key is stored here.
+create table if not exists gig_photos (
+  id          text primary key,
+  gig_id      text not null references gigs(id) on delete cascade,
+  uploader_id text not null references users(id),
+  r2_key      text not null,
+  created_at  text not null default (datetime('now'))
+);
+
 -- RATE LIMITING — fixed-window counters for auth endpoints (D1-backed so it works
 -- everywhere on the free tier, no extra binding). key = '<route>:<ip>'.
 create table if not exists rate_limits (

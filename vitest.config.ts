@@ -11,6 +11,7 @@ export default defineWorkersConfig({
           compatibilityDate: '2024-09-23',
           compatibilityFlags: ['nodejs_compat'],
           d1Databases: { DB: 'podnet-test' },
+          r2Buckets: { PHOTOS: 'podnet-photos-test' },
           bindings: { SESSION_SECRET: 'test-secret-not-for-production' },
         },
       },

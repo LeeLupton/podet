@@ -65,6 +65,35 @@ export function spinner(label = 'Loading…') {
   return h('div', { class: 'state' }, h('div', { class: 'spin' }), h('span', {}, label))
 }
 
+// Full-size image viewer (tap a thumbnail). Tapping the backdrop closes it.
+export function openImage(url) {
+  openSheet(
+    h(
+      'div',
+      { class: 'sheet-body' },
+      h('img', { class: 'photo-full', src: url, alt: 'work photo' }),
+    ),
+  )
+}
+
+// A read-only row of photo thumbnails; tap to view full size.
+export function photoStrip(photos, urlFor) {
+  if (!photos || !photos.length) return null
+  return h(
+    'div',
+    { class: 'photo-strip' },
+    ...photos.map((p) =>
+      h('img', {
+        class: 'thumb',
+        src: urlFor(p.key),
+        alt: 'work photo',
+        loading: 'lazy',
+        onClick: () => openImage(urlFor(p.key)),
+      }),
+    ),
+  )
+}
+
 export function errorState(message, onRetry) {
   return h(
     'div',

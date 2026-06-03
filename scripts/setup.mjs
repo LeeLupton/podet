@@ -107,6 +107,14 @@ if (wrangler(['d1', 'execute', PROJECT, '--remote', '--file', 'schema.sql', '-y'
 }
 ok('Schema applied')
 
+// --- 4b. R2 bucket for photos --------------------------------------------
+heading('Ensuring R2 bucket "podnet-photos"')
+const mkBucket = wrangler(['r2', 'bucket', 'create', 'podnet-photos'], { capture: true })
+const bucketOut = `${mkBucket.stdout}\n${mkBucket.stderr}`
+if (mkBucket.status === 0) ok('R2 bucket created')
+else if (/already (exists|owned)/i.test(bucketOut)) ok('R2 bucket already exists')
+else die(`Could not create the R2 bucket.\n${bucketOut}`)
+
 // --- 5. Pages project -----------------------------------------------------
 heading(`Ensuring Pages project "${PROJECT}"`)
 const createProj = wrangler(
