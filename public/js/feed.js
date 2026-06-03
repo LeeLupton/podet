@@ -90,19 +90,14 @@ function isActive(root) {
   return root && !root.classList.contains('hidden')
 }
 
-async function ensureCoordsThenLoad() {
+function ensureCoordsThenLoad() {
   if (coords) {
     load()
     return
   }
-  clear(listEl)
-  listEl.append(spinner('Finding your location…'))
-  try {
-    coords = setCoords(await requestGeolocation())
-    load()
-  } catch (err) {
-    showLocationForm(err.message)
-  }
+  // Don't auto-request geolocation — browsers only show the permission prompt in
+  // response to a user gesture (a tap), so present the panel and let the user ask.
+  showLocationForm()
 }
 
 // Non-blocking location: try the device, or type coordinates by hand. Either way
@@ -134,12 +129,11 @@ function showLocationForm(message) {
         useGps.textContent = 'Locating…'
         useGps.disabled = true
         try {
-          const c = await requestGeolocation()
-          lat.value = String(c.lat)
-          lng.value = String(c.lng)
+          // Called from a tap → the browser shows the permission prompt here.
+          coords = setCoords(await requestGeolocation())
+          renderFeed(document.getElementById('view-nearby'))
         } catch (err) {
           toast(err.message, 'error')
-        } finally {
           useGps.textContent = '📍 Use my location'
           useGps.disabled = false
         }
