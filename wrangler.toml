@@ -18,3 +18,8 @@ compatibility_date = "2024-09-23"
 binding = "DB"
 database_name = "podnet"
 database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+# R2 bucket for gig photos — exposed to Functions as `env.PHOTOS`.
+[[r2_buckets]]
+binding = "PHOTOS"
+bucket_name = "podnet-photos"

@@ -102,10 +102,32 @@ async function load() {
       return
     }
     for (const p of posts) listEl.append(postCard(p))
+    attachLoadMore(posts)
   } catch (err) {
     clear(listEl)
     listEl.append(errorState(err instanceof ApiError ? err.message : 'Could not load board', load))
   }
+}
+
+const PAGE = 20
+
+// Keyset "load more": only when the last batch filled a page.
+function attachLoadMore(batch) {
+  if (batch.length < PAGE) return
+  const btn = h('button', { class: 'btn-ghost load-more' }, 'Load more')
+  btn.addEventListener('click', async () => {
+    btn.disabled = true
+    try {
+      const more = await api.posts(batch[batch.length - 1].created_at)
+      for (const p of more) listEl.insertBefore(postCard(p), btn)
+      btn.remove()
+      attachLoadMore(more)
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Could not load more', 'error')
+      btn.disabled = false
+    }
+  })
+  listEl.append(btn)
 }
 
 function postCard(p) {

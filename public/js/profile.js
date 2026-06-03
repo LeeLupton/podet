@@ -13,6 +13,7 @@ import {
   h,
   money,
   openSheet,
+  photoStrip,
   spinner,
   starsText,
   toast,
@@ -50,7 +51,7 @@ async function load(root) {
     clear(root)
     root.append(headerBlock(me, profile))
     root.append(gigsBlock(mine, root))
-    root.append(reviewsBlock(reviews))
+    root.append(reviewsBlock(reviews, me.id))
   } catch (err) {
     clear(root)
     root.append(
@@ -147,6 +148,7 @@ function postedGigCard(g, root) {
     g.worker_name
       ? h('div', { class: 'gig-meta' }, 'Worker: ', nameLink(g.worker_name, g.claimed_by))
       : null,
+    photoStrip(g.photos, api.imgUrl),
   )
 
   if (g.status === 'AVAILABLE') {
@@ -218,14 +220,38 @@ function claimedGigCard(g, root) {
   return card
 }
 
-function reviewsBlock(reviews) {
+const PAGE = 20
+
+function reviewsBlock(reviews, userId) {
   const wrap = h('div', { class: 'me-section' }, h('h2', { class: 'section-title' }, 'Reviews'))
   if (!reviews.length) {
     wrap.append(emptyState('No reviews yet — claim and complete a gig to build your portfolio.'))
     return wrap
   }
-  for (const r of reviews) wrap.append(reviewCard(r))
+  const list = h('div', { class: 'list' })
+  for (const r of reviews) list.append(reviewCard(r))
+  wrap.append(list)
+  attachReviewLoadMore(wrap, list, reviews, userId)
   return wrap
+}
+
+// Keyset "load more": only shown when the last batch filled a page.
+function attachReviewLoadMore(wrap, list, batch, userId) {
+  if (batch.length < PAGE) return
+  const btn = h('button', { class: 'btn-ghost load-more' }, 'Load more')
+  btn.addEventListener('click', async () => {
+    btn.disabled = true
+    try {
+      const more = await api.userReviews(userId, batch[batch.length - 1].created_at)
+      for (const r of more) list.append(reviewCard(r))
+      btn.remove()
+      attachReviewLoadMore(wrap, list, more, userId)
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Could not load more', 'error')
+      btn.disabled = false
+    }
+  })
+  wrap.append(btn)
 }
 
 function reviewCard(r) {
@@ -244,6 +270,7 @@ function reviewCard(r) {
       `${r.task_type}${r.neighborhood ? ` · ${r.neighborhood}` : ''}`,
     ),
     r.body ? h('p', { class: 'review-body' }, r.body) : null,
+    photoStrip(r.photos, api.imgUrl),
     h('div', { class: 'review-by' }, `— ${r.hirer_name || 'hirer'}`),
   )
 }
@@ -277,8 +304,14 @@ export async function openUserProfile(userId) {
       statsRow(avg, profile),
       h('h3', { class: 'subhead' }, 'Reviews'),
     )
-    if (!reviews.length) body.append(emptyState('No reviews yet.'))
-    else for (const r of reviews) body.append(reviewCard(r))
+    if (!reviews.length) {
+      body.append(emptyState('No reviews yet.'))
+    } else {
+      const list = h('div', { class: 'list' })
+      for (const r of reviews) list.append(reviewCard(r))
+      body.append(list)
+      attachReviewLoadMore(body, list, reviews, userId)
+    }
   } catch (err) {
     clear(body)
     body.append(errorState(err instanceof ApiError ? err.message : 'Could not load profile', null))

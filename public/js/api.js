@@ -14,13 +14,19 @@ export class ApiError extends Error {
   }
 }
 
-async function request(path, { method = 'GET', body, headers } = {}) {
+async function request(path, { method = 'GET', body, raw, headers } = {}) {
+  // `raw` sends a Blob/File/ArrayBuffer as-is (for image uploads); `body` is JSON.
   const opts = {
     method,
     credentials: 'include',
-    headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...headers },
+    headers: {
+      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      ...(raw?.type ? { 'Content-Type': raw.type } : {}),
+      ...headers,
+    },
   }
   if (body !== undefined) opts.body = JSON.stringify(body)
+  else if (raw !== undefined) opts.body = raw
 
   let res
   try {
@@ -66,11 +72,15 @@ export const api = {
   deleteGig: (id) => request(`/gigs/${id}`, { method: 'DELETE' }),
   claimGig: (id) => request(`/gigs/${id}/claim`, { method: 'POST' }),
   abandonGig: (id) => request(`/gigs/${id}/abandon`, { method: 'POST' }),
+  uploadGigPhoto: (gigId, file) => request(`/gigs/${gigId}/photos`, { method: 'POST', raw: file }),
+  deleteGigPhoto: (gigId, photoId) =>
+    request(`/gigs/${gigId}/photos/${photoId}`, { method: 'DELETE' }),
+  imgUrl: (key) => `${BASE}/img/${key}`,
   completeGig: (id, rating, review) =>
     request(`/gigs/${id}/complete`, { method: 'POST', body: { rating, review } }),
 
   // Board
-  posts: () => request('/posts'),
+  posts: (before) => request(`/posts${before ? `?before=${encodeURIComponent(before)}` : ''}`),
   post: (id) => request(`/posts/${id}`),
   createPost: (post) => request('/posts', { method: 'POST', body: post }),
   updatePost: (id, body, area_label) =>
@@ -85,5 +95,6 @@ export const api = {
 
   // Profiles
   user: (id) => request(`/users/${id}`),
-  userReviews: (id) => request(`/users/${id}/reviews`),
+  userReviews: (id, before) =>
+    request(`/users/${id}/reviews${before ? `?before=${encodeURIComponent(before)}` : ''}`),
 }

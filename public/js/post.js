@@ -2,7 +2,7 @@
 // shown on your own CLAIMED gigs. Everything routes through api.js.
 
 import { ApiError, api } from './api.js'
-import { clear, h, money, toast } from './ui.js'
+import { clear, h, money, openImage, toast } from './ui.js'
 
 // Optional prefill when "Turn into a gig" comes from a board post.
 let pendingPrefill = null
@@ -197,12 +197,83 @@ export function renderRatePanel(gig, onDone) {
     }
   })
 
+  // Photos of the finished work — uploaded to the gig now; they show on both
+  // the worker's portfolio and your profile after you close & pay.
+  const thumbs = h('div', { class: 'photo-strip' })
+  const photos = (gig.photos || []).slice()
+  function paintThumbs() {
+    clear(thumbs)
+    for (const p of photos) {
+      thumbs.append(
+        h(
+          'div',
+          { class: 'thumb-wrap' },
+          h('img', {
+            class: 'thumb',
+            src: api.imgUrl(p.key),
+            alt: 'work photo',
+            loading: 'lazy',
+            onClick: () => openImage(api.imgUrl(p.key)),
+          }),
+          h(
+            'button',
+            {
+              type: 'button',
+              class: 'thumb-x',
+              'aria-label': 'Remove photo',
+              onClick: async () => {
+                try {
+                  await api.deleteGigPhoto(gig.id, p.id)
+                  photos.splice(photos.indexOf(p), 1)
+                  paintThumbs()
+                } catch (err) {
+                  toast(err instanceof ApiError ? err.message : 'Could not remove photo', 'error')
+                }
+              },
+            },
+            '×',
+          ),
+        ),
+      )
+    }
+  }
+  paintThumbs()
+
+  const fileInput = h('input', {
+    type: 'file',
+    accept: 'image/*',
+    capture: 'environment',
+    multiple: true,
+    class: 'hidden',
+    onChange: async (e) => {
+      const files = Array.from(e.target.files || [])
+      e.target.value = ''
+      for (const file of files) {
+        try {
+          const res = await api.uploadGigPhoto(gig.id, file)
+          photos.push({ id: res.id, key: res.key })
+          paintThumbs()
+        } catch (err) {
+          toast(err instanceof ApiError ? err.message : 'Could not upload photo', 'error')
+        }
+      }
+    },
+  })
+  const addPhotoBtn = h(
+    'button',
+    { type: 'button', class: 'btn-ghost', onClick: () => fileInput.click() },
+    '📷 Add work photos',
+  )
+
   return h(
     'div',
     { class: 'rate-panel' },
     h('div', { class: 'rate-head' }, 'Rate ', h('strong', {}, gig.worker_name || 'the worker')),
     h('div', { class: 'stars-row' }, ...starBtns),
     note,
+    thumbs,
+    addPhotoBtn,
+    fileInput,
     payBtn,
   )
 }

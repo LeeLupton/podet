@@ -215,6 +215,22 @@
       .review-body { margin: 8px 0 4px; white-space: pre-wrap; }
       .review-by { font-size: 14px; opacity: .75; }
 
+      /* Photos */
+      .photo-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+      .thumb {
+        width: 84px; height: 84px; object-fit: cover; border-radius: 10px;
+        border: 1px solid var(--border); cursor: pointer; background: var(--bg);
+      }
+      .thumb-wrap { position: relative; }
+      .thumb-x {
+        position: absolute; top: -6px; right: -6px; width: 24px; height: 24px;
+        border-radius: 50%; border: 1px solid var(--border); background: var(--panel);
+        color: var(--text); font-size: 16px; line-height: 1; cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .photo-full { width: 100%; max-height: 80vh; object-fit: contain; border-radius: 12px; }
+      .load-more { width: 100%; margin-top: 4px; }
+
       /* Auth */
       .auth-card { display: flex; flex-direction: column; gap: 14px; max-width: 380px; }
       .brand { font-size: 30px; font-weight: 800; color: var(--accent); margin: 0; text-align: center; }
