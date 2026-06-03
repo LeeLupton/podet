@@ -35,17 +35,20 @@ the Pages Functions API touches it.
 ## Project layout
 
 ```
-index.html                 view containers, theme tokens, CDN imports
+public/index.html          view containers, theme tokens, CDN imports
+public/_headers            security headers for static assets (CSP, HSTS, …)
+public/js/api.js           data layer — the only module aware of the API shape
+public/js/auth.js          register/login/logout + current-user state
+public/js/feed.js          geolocation, nearby gigs, claim, re-query on focus
+public/js/post.js          create/edit a gig + inline inspect/rate panel
+public/js/board.js         posts: list, create, comment, interest, "turn into a gig"
+public/js/profile.js       portfolio + any user's public profile sheet
+public/js/ui.js,main.js    shared DOM helpers + bootstrap/tab navigation
 functions/api/[[path]].ts  the Hono API (auth, gigs, board, profiles); binds env.DB + env.SESSION_SECRET
-js/api.js                  data layer — the only module aware of the API shape
-js/auth.js                 register/login/logout + current-user state
-js/feed.js                 geolocation, nearby gigs, claim, re-query on focus
-js/post.js                 create a gig + inline inspect/rate panel
-js/board.js                posts: list, create, comment, interest, "turn into a gig"
-js/profile.js              portfolio: gig count, average, reviews
-js/ui.js / js/main.js      shared DOM helpers + bootstrap/tab navigation
 schema.sql                 D1 schema
-wrangler.toml              Pages + D1 config (NO secrets)
+wrangler.toml              Pages + D1 config (NO secrets; pages_build_output_dir = public)
+scripts/setup.mjs          one-command provision + deploy
+test/api.test.ts           integration tests (Vitest + workers pool)
 ```
 
 ## Local development
@@ -59,31 +62,77 @@ cp .dev.vars.example .dev.vars      # then edit SESSION_SECRET to a long random 
 # Initialize the local D1 database:
 npm run db:init:local               # wrangler d1 execute podnet --local --file schema.sql
 
-# Run the static site + Functions together:
-npm run dev                         # wrangler pages dev . --d1 DB=podnet
+# Run the static site + Functions together (reads bindings from wrangler.toml):
+npm run dev                         # wrangler pages dev
 ```
+
+Other scripts: `npm test` (integration tests), `npm run typecheck`, `npm run lint`,
+`npm run format`.
 
 Then open the printed local URL. Register two accounts to exercise the full flow:
 user A posts a gig → user B claims it → A completes and rates it → B's profile shows the review.
 
-## Deploy (all Cloudflare, $0 tier)
+## Deploy in one command (all Cloudflare, $0 tier)
 
 ```bash
-# 1. Create the D1 database and copy its id into wrangler.toml
-wrangler d1 create podnet
-
-# 2. Apply the schema to the remote database
-npm run db:init                     # wrangler d1 execute podnet --file schema.sql
-
-# 3. Set the server secret (never in code/repo/wrangler.toml)
-wrangler pages secret put SESSION_SECRET
-
-# 4. Deploy the Pages project (static files + functions/)
-npm run deploy                      # wrangler pages deploy .
+git clone <this-repo> && cd podet
+npm run setup
 ```
 
-Bind the D1 database to the Pages project as `DB` in the dashboard (or via `wrangler.toml`).
+`npm run setup` provisions and deploys everything, and is safe to re-run:
+
+1. installs dependencies,
+2. authenticates with Cloudflare,
+3. creates the D1 database `podnet` and writes its id into `wrangler.toml`,
+4. applies `schema.sql` to the remote database,
+5. creates the Pages project `podnet`,
+6. generates `SESSION_SECRET` and stores it as a Pages secret (only if not already set),
+7. deploys the site and prints the live `*.pages.dev` URL.
+
+### Authentication
+
+Cloudflare's CLI does **not** use an email + password. Choose one:
+
+- **API token (recommended, fully scriptable):**
+  ```bash
+  export CLOUDFLARE_API_TOKEN=...   # and CLOUDFLARE_ACCOUNT_ID if you have several accounts
+  npm run setup
+  ```
+  Create the token at *My Profile → API Tokens → Create Token* with these **account** permissions:
+  **D1:Edit**, **Cloudflare Pages:Edit**, **Workers Scripts:Edit**, **Account Settings:Read**.
+- **Interactive:** just run `npm run setup` with no token — it falls back to `wrangler login`
+  (opens your browser).
+
+Re-running `npm run setup` redeploys using the same database and secret (it won't rotate
+`SESSION_SECRET`, so existing sessions keep working).
+
+## Manual deploy (if you prefer the individual steps)
+
+```bash
+wrangler d1 create podnet                         # copy database_id into wrangler.toml
+npm run db:init                                    # apply schema.sql to the remote DB
+wrangler pages project create podnet --production-branch main
+wrangler pages secret put SESSION_SECRET           # paste a long random string
+npm run deploy                                      # wrangler pages deploy
+```
+
+The D1 binding (`DB`) comes from `wrangler.toml`, so there's no manual dashboard step.
 The API lives at `/api/*` on the same origin, so cookies are first-party and there is no CORS.
 D1 does not pause, so there is no keep-alive to run.
 
 > If any secret ever leaks into git history, **rotate it** — history keeps the old value.
+
+## Hardening notes
+
+- Static assets live in `public/`; `pages_build_output_dir = "public"` keeps source/config
+  files (`schema.sql`, `wrangler.toml`, …) from ever being served.
+- Security headers: `public/_headers` (CSP, HSTS, X-Frame-Options, …) for static assets;
+  Hono `secureHeaders()` for API responses.
+- Auth endpoints are rate-limited (D1-backed fixed window); login runs constant-work PBKDF2
+  even for unknown emails to avoid account enumeration.
+- Tests (`npm test`) run the API against a real local D1 in the Workers runtime; CI runs
+  typecheck + lint + tests on every push.
+- The Tailwind v3 Play CDN compiles in-browser and so requires `'unsafe-eval'`/`'unsafe-inline'`
+  in the CSP. Precompiling Tailwind to a static stylesheet (a small build step) would let you
+  drop both — a worthwhile follow-up for stricter CSP.
+
