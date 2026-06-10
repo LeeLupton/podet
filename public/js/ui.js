@@ -34,12 +34,11 @@ export function clear(node) {
 export function toast(message, kind = 'info') {
   const root = document.getElementById('toast-root')
   if (!root) return
-  const color = kind === 'error' ? 'var(--warning)' : 'var(--accent)'
+  // Classes, not style attributes — the strict CSP (style-src 'self') blocks inline styles.
   const el = h(
     'div',
     {
-      class: 'toast',
-      style: `border-color:${color}`,
+      class: kind === 'error' ? 'toast toast-error' : 'toast',
       role: 'status',
     },
     message,
@@ -98,7 +97,7 @@ export function errorState(message, onRetry) {
   return h(
     'div',
     { class: 'state' },
-    h('span', { style: 'color:var(--warning)' }, message),
+    h('span', { class: 'warn-text' }, message),
     onRetry ? h('button', { class: 'btn-ghost', onClick: onRetry }, 'Retry') : null,
   )
 }

@@ -166,7 +166,7 @@ function showLocationForm(message) {
       },
     },
     h('h2', { class: 'screen-title' }, 'Set your location'),
-    message ? h('p', { class: 'hint', style: 'color:var(--warning)' }, message) : null,
+    message ? h('p', { class: 'hint warn-text' }, message) : null,
     useGps,
     h('div', { class: 'row' }, lat, lng),
     h('button', { type: 'submit', class: 'btn-primary' }, 'Show nearby gigs'),
