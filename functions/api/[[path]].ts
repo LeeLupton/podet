@@ -245,6 +245,37 @@ app.get('/me', async (c) => {
   return c.json(user)
 })
 
+// Change password — requires the current password; rate-limited.
+app.post('/me/password', async (c) => {
+  if (!(await rateLimit(c, 'chpass', 5, 60))) {
+    return c.json({ error: 'too many attempts — try again shortly' }, 429)
+  }
+  const userId = c.get('userId')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const current = String(b.current_password ?? '')
+  const next = String(b.new_password ?? '')
+  if (!current || !next) return c.json({ error: 'current and new password required' }, 400)
+  if (next.length < 8) return c.json({ error: 'new password must be at least 8 characters' }, 400)
+  if (next.length > LIMITS.password) return c.json({ error: 'new password too long' }, 400)
+
+  const user: any = await c.env.DB.prepare('select password_hash from users where id = ?')
+    .bind(userId)
+    .first()
+  if (!user || !(await verifyPassword(current, user.password_hash))) {
+    return c.json({ error: 'current password is incorrect' }, 403)
+  }
+  const password_hash = await hashPassword(next)
+  await c.env.DB.prepare('update users set password_hash = ? where id = ?')
+    .bind(password_hash, userId)
+    .run()
+  return c.json({ ok: true })
+})
+
 /* ============================== GIGS =============================== */
 
 // Nearby AVAILABLE gigs: SQL bounding-box prefilter, JS Haversine refine + sort.
@@ -645,6 +676,7 @@ app.get('/posts', async (c) => {
             u.display_name as author_name,
             (select count(*) from post_comments pc where pc.post_id = p.id) as comment_count,
             (select count(*) from post_interest pi where pi.post_id = p.id) as interest_count,
+            (select count(*) from gigs g where g.from_post_id = p.id) as gig_count,
             exists(select 1 from post_interest pi where pi.post_id = p.id and pi.user_id = ?) as i_am_interested
        from posts p
        join users u on u.id = p.author_id
@@ -692,6 +724,7 @@ app.get('/posts/:id', async (c) => {
     `select p.id, p.author_id, p.body, p.area_label, p.lat, p.lng, p.created_at,
             u.display_name as author_name,
             (select count(*) from post_interest pi where pi.post_id = p.id) as interest_count,
+            (select count(*) from gigs g where g.from_post_id = p.id) as gig_count,
             exists(select 1 from post_interest pi where pi.post_id = p.id and pi.user_id = ?) as i_am_interested
        from posts p join users u on u.id = p.author_id
       where p.id = ?`,

@@ -51,6 +51,7 @@ async function load(root) {
     clear(root)
     root.append(headerBlock(me, profile))
     root.append(notificationsBlock())
+    root.append(changePasswordBlock())
     root.append(gigsBlock(mine, root))
     root.append(reviewsBlock(reviews, me.id))
   } catch (err) {
@@ -317,6 +318,63 @@ export async function openUserProfile(userId) {
     clear(body)
     body.append(errorState(err instanceof ApiError ? err.message : 'Could not load profile', null))
   }
+}
+
+/* --- Change password --- */
+
+function changePasswordBlock() {
+  const current = h('input', {
+    class: 'input',
+    type: 'password',
+    placeholder: 'Current password',
+    autocomplete: 'current-password',
+    required: true,
+  })
+  const next = h('input', {
+    class: 'input',
+    type: 'password',
+    placeholder: 'New password (8+ chars)',
+    autocomplete: 'new-password',
+    required: true,
+  })
+  const save = h('button', { class: 'btn-ghost', type: 'submit' }, 'Update password')
+  const form = h(
+    'form',
+    {
+      class: 'form hidden',
+      onSubmit: async (e) => {
+        e.preventDefault()
+        save.disabled = true
+        try {
+          await api.changePassword(current.value, next.value)
+          current.value = ''
+          next.value = ''
+          form.classList.add('hidden')
+          toggle.textContent = 'Change password'
+          toast('Password updated')
+        } catch (err) {
+          toast(err instanceof ApiError ? err.message : 'Could not update password', 'error')
+        } finally {
+          save.disabled = false
+        }
+      },
+    },
+    current,
+    next,
+    save,
+  )
+  const toggle = h(
+    'button',
+    {
+      class: 'link-btn',
+      onClick: () => {
+        const open = form.classList.toggle('hidden')
+        toggle.textContent = open ? 'Change password' : 'Cancel'
+      },
+    },
+    'Change password',
+  )
+  return h('div', { class: 'card form' }, toggle, form)
 }
 
 /* --- Web push opt-in --- */
