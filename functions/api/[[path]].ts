@@ -15,13 +15,14 @@ import { sign, verify } from 'hono/jwt'
 import { secureHeaders } from 'hono/secure-headers'
 
 import { bboxDeltas, haversineMiles } from '../lib/geo'
+import { parseGigInput } from '../lib/gig'
 import { clampLimit, parseBefore } from '../lib/pagination'
 import { DUMMY_PASSWORD_HASH, hashPassword, verifyPassword } from '../lib/password'
 import { MAX_PHOTOS_PER_GIG, checkImageUpload, photoKey } from '../lib/photos'
 import { type PushDeliveryOptions, sendWebPush, topicFor } from '../lib/push'
 import { rateLimitKey, windowStart } from '../lib/ratelimit'
-import { validateSlot, validateWindow } from '../lib/schedule'
-import { LIMITS, isValidLatLng, isValidRating, validateString } from '../lib/validate'
+import { validateSlot } from '../lib/schedule'
+import { LIMITS, isValidRating, validateString } from '../lib/validate'
 
 type Env = {
   DB: D1Database
@@ -305,7 +306,50 @@ app.post('/me/delete', async (c) => {
   if (!user || !(await verifyPassword(password, user.password_hash))) {
     return c.json({ error: 'password is incorrect' }, 403)
   }
-  // Scramble PII; keep the row so foreign keys (reviews, gigs) stay valid.
+  // The user's open gigs must not linger as claimable ghosts. Collect them,
+  // notify any worker mid-claim, and drop their R2 photos before deleting.
+  const openGigs = await c.env.DB.prepare(
+    `select id, task_type, claimed_by from gigs where posted_by = ? and status <> 'COMPLETED'`,
+  )
+    .bind(userId)
+    .all()
+  const openIds = (openGigs.results as any[]).map((g) => g.id)
+  if (openIds.length > 0) {
+    const placeholders = openIds.map(() => '?').join(',')
+    const photos = await c.env.DB.prepare(
+      `select r2_key from gig_photos where gig_id in (${placeholders})`,
+    )
+      .bind(...openIds)
+      .all()
+    for (const ph of photos.results as any[]) {
+      try {
+        await c.env.PHOTOS.delete(ph.r2_key)
+      } catch {
+        // best-effort cleanup
+      }
+    }
+    for (const g of openGigs.results as any[]) {
+      if (g.claimed_by) {
+        fireAndForget(
+          c,
+          notifyUser(
+            c,
+            g.claimed_by,
+            {
+              title: 'Gig cancelled',
+              body: `${g.task_type} — the hirer closed their account`,
+              url: '/',
+            },
+            { topic: topicFor(g.id), urgency: 'high' },
+          ),
+        )
+      }
+    }
+    await c.env.DB.prepare(`delete from gigs where posted_by = ? and status <> 'COMPLETED'`)
+      .bind(userId)
+      .run()
+  }
+  // Scramble PII; keep the row so foreign keys (reviews, completed gigs) stay valid.
   await c.env.DB.batch([
     c.env.DB.prepare(
       `update users set deleted = 1, session_epoch = session_epoch + 1,
@@ -436,6 +480,15 @@ app.get('/gigs/:id', async (c) => {
     .bind(c.req.param('id'))
     .first()
   if (!gig) return c.json({ error: 'not found' }, 404)
+  // Parties of the gig always see it; otherwise blocking hides it like the feed.
+  const viewer = c.get('userId')
+  if (
+    gig.posted_by !== viewer &&
+    gig.claimed_by !== viewer &&
+    (await isBlockedBetween(c.env.DB, viewer, gig.posted_by))
+  ) {
+    return c.json({ error: 'not found' }, 404)
+  }
   return c.json(gig)
 })
 
@@ -448,35 +501,10 @@ app.post('/gigs', async (c) => {
   } catch {
     return c.json({ error: 'invalid body' }, 400)
   }
-  const taskCheck = validateString(b.task_type, LIMITS.task_type)
-  const hoodCheck = validateString(b.neighborhood, LIMITS.neighborhood)
-  const descCheck = validateString(b.description, LIMITS.description)
-  if (!taskCheck.ok || !hoodCheck.ok || !descCheck.ok) {
-    return c.json(
-      { error: 'task_type, neighborhood and description required (and within length limits)' },
-      400,
-    )
-  }
-  const task_type = taskCheck.value as string
-  const neighborhood = hoodCheck.value as string
-  const description = descCheck.value as string
-  const cash_payout = Math.round(Number(b.cash_payout))
-  const est_hours = Number(b.est_hours)
-  const lat = Number(b.lat)
-  const lng = Number(b.lng)
+  const parsed = parseGigInput(b)
+  if (!parsed.ok) return c.json({ error: parsed.reason }, 400)
+  const g = parsed.gig
   const from_post_id = b.from_post_id ? String(b.from_post_id) : null
-
-  if (!Number.isFinite(cash_payout) || cash_payout < 0 || cash_payout > 1_000_000) {
-    return c.json({ error: 'cash_payout must be a non-negative number' }, 400)
-  }
-  if (!Number.isFinite(est_hours) || est_hours <= 0 || est_hours > 10_000) {
-    return c.json({ error: 'est_hours must be positive' }, 400)
-  }
-  if (!isValidLatLng(lat, lng)) {
-    return c.json({ error: 'valid lat and lng required' }, 400)
-  }
-  const win = validateWindow(b.window_start, b.window_end, b.notice_hours)
-  if (!win.ok) return c.json({ error: win.reason }, 400)
 
   const id = crypto.randomUUID()
   await c.env.DB.prepare(
@@ -485,18 +513,18 @@ app.post('/gigs', async (c) => {
   )
     .bind(
       id,
-      task_type,
-      neighborhood,
-      cash_payout,
-      est_hours,
-      lat,
-      lng,
-      description,
+      g.task_type,
+      g.neighborhood,
+      g.cash_payout,
+      g.est_hours,
+      g.lat,
+      g.lng,
+      g.description,
       userId,
       from_post_id,
-      win.window_start,
-      win.window_end,
-      win.notice_hours,
+      g.window_start,
+      g.window_end,
+      g.notice_hours,
     )
     .run()
   // Best-effort: if this gig grew out of a board post, tell the post author.
@@ -512,7 +540,7 @@ app.post('/gigs', async (c) => {
           origin.author_id,
           {
             title: 'Your post became a gig',
-            body: `${task_type} — ${cash_payout} offered`,
+            body: `${g.task_type} — ${g.cash_payout} offered`,
             url: '/',
           },
           { topic: topicFor(from_post_id), urgency: 'normal' },
@@ -643,46 +671,25 @@ app.put('/gigs/:id', async (c) => {
   } catch {
     return c.json({ error: 'invalid body' }, 400)
   }
-  const taskCheck = validateString(b.task_type, LIMITS.task_type)
-  const hoodCheck = validateString(b.neighborhood, LIMITS.neighborhood)
-  const descCheck = validateString(b.description, LIMITS.description)
-  if (!taskCheck.ok || !hoodCheck.ok || !descCheck.ok) {
-    return c.json(
-      { error: 'task_type, neighborhood and description required (and within length limits)' },
-      400,
-    )
-  }
-  const cash_payout = Math.round(Number(b.cash_payout))
-  const est_hours = Number(b.est_hours)
-  const lat = Number(b.lat)
-  const lng = Number(b.lng)
-  if (!Number.isFinite(cash_payout) || cash_payout < 0 || cash_payout > 1_000_000) {
-    return c.json({ error: 'cash_payout must be a non-negative number' }, 400)
-  }
-  if (!Number.isFinite(est_hours) || est_hours <= 0 || est_hours > 10_000) {
-    return c.json({ error: 'est_hours must be positive' }, 400)
-  }
-  if (!isValidLatLng(lat, lng)) {
-    return c.json({ error: 'valid lat and lng required' }, 400)
-  }
-  const win = validateWindow(b.window_start, b.window_end, b.notice_hours)
-  if (!win.ok) return c.json({ error: win.reason }, 400)
+  const parsed = parseGigInput(b)
+  if (!parsed.ok) return c.json({ error: parsed.reason }, 400)
+  const g = parsed.gig
   const res = await c.env.DB.prepare(
     `update gigs set task_type = ?, neighborhood = ?, description = ?, cash_payout = ?, est_hours = ?, lat = ?, lng = ?,
             window_start = ?, window_end = ?, notice_hours = ?
       where id = ? and posted_by = ? and status = 'AVAILABLE'`,
   )
     .bind(
-      taskCheck.value,
-      hoodCheck.value,
-      descCheck.value,
-      cash_payout,
-      est_hours,
-      lat,
-      lng,
-      win.window_start,
-      win.window_end,
-      win.notice_hours,
+      g.task_type,
+      g.neighborhood,
+      g.description,
+      g.cash_payout,
+      g.est_hours,
+      g.lat,
+      g.lng,
+      g.window_start,
+      g.window_end,
+      g.notice_hours,
       id,
       userId,
     )
@@ -752,11 +759,14 @@ app.post('/gigs/:id/unclaim', async (c) => {
   const before: any = await c.env.DB.prepare('select claimed_by, task_type from gigs where id = ?')
     .bind(id)
     .first()
+  if (!before?.claimed_by) return c.json({ error: 'not your claimed gig' }, 403)
+  // Pin claimed_by so a concurrent abandon+re-claim can't make us drop (and
+  // notify) the wrong worker — the update only fires for the worker we read.
   const res = await c.env.DB.prepare(
     `update gigs set status = 'AVAILABLE', claimed_by = null, scheduled_at = null, done_at = null
-      where id = ? and status = 'CLAIMED' and posted_by = ?`,
+      where id = ? and status = 'CLAIMED' and posted_by = ? and claimed_by = ?`,
   )
-    .bind(id, userId)
+    .bind(id, userId, before.claimed_by)
     .run()
   if (res.meta.changes !== 1) {
     return c.json({ error: 'not your claimed gig' }, 403)
@@ -833,6 +843,10 @@ app.get('/gigs/:id/messages', async (c) => {
   if (gig.posted_by !== userId && gig.claimed_by !== userId) {
     return c.json({ error: 'only the hirer and worker can read this thread' }, 403)
   }
+  const other = gig.posted_by === userId ? gig.claimed_by : gig.posted_by
+  if (other && (await isBlockedBetween(c.env.DB, userId, other))) {
+    return c.json({ error: 'messaging unavailable' }, 403)
+  }
   const rows = await c.env.DB.prepare(
     `select m.id, m.sender_id, m.body, m.created_at, u.display_name as sender_name
        from gig_messages m join users u on u.id = m.sender_id
@@ -852,6 +866,12 @@ app.post('/gigs/:id/messages', async (c) => {
   }
   if (!gig.claimed_by) {
     return c.json({ error: 'messaging opens once the gig is claimed' }, 409)
+  }
+  {
+    const other = gig.posted_by === userId ? gig.claimed_by : gig.posted_by
+    if (await isBlockedBetween(c.env.DB, userId, other)) {
+      return c.json({ error: 'messaging unavailable' }, 403)
+    }
   }
   let b: any
   try {
@@ -1040,6 +1060,10 @@ app.get('/posts/:id', async (c) => {
     .bind(userId, id)
     .first()
   if (!post) return c.json({ error: 'not found' }, 404)
+  // Direct links don't bypass blocking: a blocked author's post reads as gone,
+  // and comments from blocked users are filtered out of visible threads.
+  const blocked = await blockedSet(c.env.DB, userId)
+  if (blocked.has(post.author_id)) return c.json({ error: 'not found' }, 404)
   const comments = await c.env.DB.prepare(
     `select pc.id, pc.post_id, pc.author_id, pc.body, pc.created_at, u.display_name as author_name, u.verified as author_verified
        from post_comments pc join users u on u.id = pc.author_id
@@ -1047,7 +1071,10 @@ app.get('/posts/:id', async (c) => {
   )
     .bind(id)
     .all()
-  return c.json({ ...post, comments: comments.results })
+  return c.json({
+    ...post,
+    comments: (comments.results as any[]).filter((cm) => !blocked.has(cm.author_id)),
+  })
 })
 
 // Edit own post.
@@ -1192,29 +1219,39 @@ app.delete('/posts/:id/interest', async (c) => {
 // Public columns only — never email or password_hash.
 app.get('/users/:id', async (c) => {
   const targetId = c.req.param('id')
-  const user: any = await c.env.DB.prepare(
-    `select id, display_name, total_gigs, rating_sum, rating_count, business_name, verified, created_at from users where id = ?`,
-  )
-    .bind(targetId)
-    .first()
-  if (!user) return c.json({ error: 'not found' }, 404)
+  const callerId = c.get('userId')
+  // One D1 batch (single round trip): profile row, hirer counts, block both ways.
+  const [userRes, hirerRes, iBlockedRes, blockedMeRes] = await c.env.DB.batch([
+    c.env.DB.prepare(
+      `select id, display_name, total_gigs, rating_sum, rating_count, business_name, verified, deleted, created_at from users where id = ?`,
+    ).bind(targetId),
+    c.env.DB.prepare(
+      `select count(*) as posted,
+                sum(case when status = 'COMPLETED' then 1 else 0 end) as paid
+           from gigs where posted_by = ?`,
+    ).bind(targetId),
+    c.env.DB.prepare('select 1 from blocks where blocker_id = ? and blocked_id = ?').bind(
+      callerId,
+      targetId,
+    ),
+    c.env.DB.prepare('select 1 from blocks where blocker_id = ? and blocked_id = ?').bind(
+      targetId,
+      callerId,
+    ),
+  ])
+  const user: any = (userRes.results as any[])[0]
+  // Closed accounts read as gone; someone who blocked you is also gone to you.
+  // (If YOU blocked THEM the profile stays visible so you can unblock from it.)
+  if (!user || user.deleted) return c.json({ error: 'not found' }, 404)
+  if ((blockedMeRes.results as any[]).length > 0 && targetId !== callerId) {
+    return c.json({ error: 'not found' }, 404)
+  }
   const average =
     user.rating_count > 0 ? Number((user.rating_sum / user.rating_count).toFixed(2)) : null
   // Hirer-side accountability: how many gigs they've posted and paid out, so a
   // worker can judge a hirer before claiming (total_gigs is worker-side only).
-  const hirer: any = await c.env.DB.prepare(
-    `select count(*) as posted,
-            sum(case when status = 'COMPLETED' then 1 else 0 end) as paid
-       from gigs where posted_by = ?`,
-  )
-    .bind(targetId)
-    .first()
-  // Whether the caller has blocked this user (drives the Block/Unblock toggle).
-  const blocked: any = await c.env.DB.prepare(
-    'select 1 from blocks where blocker_id = ? and blocked_id = ?',
-  )
-    .bind(c.get('userId'), targetId)
-    .first()
+  const hirer: any = (hirerRes.results as any[])[0]
+  const blocked = (iBlockedRes.results as any[]).length > 0
   return c.json({
     id: user.id,
     display_name: user.display_name,
@@ -1233,6 +1270,19 @@ app.get('/users/:id', async (c) => {
 /* ============================== BLOCKING =========================== */
 // One-directional exclude. Helper returns ids the caller blocked OR who blocked
 // the caller — used to filter feeds and gate claims/messaging both ways.
+// True when either user has blocked the other. The single shared primitive for
+// pairwise enforcement (messages, detail views, profiles) — list endpoints use
+// blockedSet for bulk filtering.
+async function isBlockedBetween(db: D1Database, a: string, b: string): Promise<boolean> {
+  const row = await db
+    .prepare(
+      'select 1 from blocks where (blocker_id = ?1 and blocked_id = ?2) or (blocker_id = ?2 and blocked_id = ?1)',
+    )
+    .bind(a, b)
+    .first()
+  return !!row
+}
+
 async function blockedSet(db: D1Database, userId: string): Promise<Set<string>> {
   const rows = await db
     .prepare(
@@ -1401,16 +1451,18 @@ app.get('/reports/mine', async (c) => {
 // README). Admins triage reports, remove content, and verify businesses.
 // Admin status confers NO gig authority — rating stays per-gig ownership.
 
-async function isAdmin(c: any): Promise<boolean> {
+// One shared gate for every /admin/* route — a new admin endpoint cannot be
+// added without protection, unlike per-handler checks.
+app.use('/admin/*', async (c: any, next: any) => {
   const row: any = await c.env.DB.prepare('select is_admin from users where id = ?')
     .bind(c.get('userId'))
     .first()
-  return !!row?.is_admin
-}
+  if (!row?.is_admin) return c.json({ error: 'admin only' }, 403)
+  await next()
+})
 
 // At-a-glance operational counts for the admin dashboard.
 app.get('/admin/stats', async (c) => {
-  if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)
   const row: any = await c.env.DB.prepare(
     `select
        (select count(*) from users where deleted = 0) as users,
@@ -1425,7 +1477,6 @@ app.get('/admin/stats', async (c) => {
 })
 
 app.get('/admin/reports', async (c) => {
-  if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)
   const rows = await c.env.DB.prepare(
     `select r.id, r.kind, r.subject_id, r.reason, r.status, r.created_at,
             u.display_name as reporter_name
@@ -1437,7 +1488,6 @@ app.get('/admin/reports', async (c) => {
 })
 
 app.post('/admin/reports/:id/resolve', async (c) => {
-  if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)
   const res = await c.env.DB.prepare(`update reports set status = 'RESOLVED' where id = ?`)
     .bind(c.req.param('id'))
     .run()
@@ -1447,7 +1497,6 @@ app.post('/admin/reports/:id/resolve', async (c) => {
 
 // Grant or revoke the verified-business badge.
 app.post('/admin/users/:id/verify', async (c) => {
-  if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)
   let b: any = {}
   try {
     b = await c.req.json()
@@ -1464,14 +1513,12 @@ app.post('/admin/users/:id/verify', async (c) => {
 
 // Admin content removal (moderation): posts cascade comments; comments direct.
 app.delete('/admin/posts/:id', async (c) => {
-  if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)
   const res = await c.env.DB.prepare('delete from posts where id = ?').bind(c.req.param('id')).run()
   if (res.meta.changes < 1) return c.json({ error: 'not found' }, 404)
   return c.json({ ok: true })
 })
 
 app.delete('/admin/comments/:id', async (c) => {
-  if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)
   const res = await c.env.DB.prepare('delete from post_comments where id = ?')
     .bind(c.req.param('id'))
     .run()
@@ -1480,7 +1527,6 @@ app.delete('/admin/comments/:id', async (c) => {
 })
 
 app.delete('/admin/gigs/:id', async (c) => {
-  if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)
   // COMPLETED gigs carry reviews/reputation — even admins don't rewrite history.
   const res = await c.env.DB.prepare(`delete from gigs where id = ? and status <> 'COMPLETED'`)
     .bind(c.req.param('id'))

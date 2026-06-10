@@ -836,18 +836,20 @@ function blockToggle(userId, blocked) {
 /* --- Blocked-users list (Me) --- */
 
 function blocksBlock() {
-  const wrap = h('div', { class: 'me-section' })
+  // Static structure built once; load() only refills the list — re-running it
+  // (after an unblock) can't duplicate the heading.
   const list = h('div', { class: 'list' })
+  const wrap = h(
+    'div',
+    { class: 'me-section hidden' },
+    h('h2', { class: 'section-title' }, 'Blocked'),
+    list,
+  )
   async function load() {
     try {
       const blocked = await api.blocks()
-      if (!blocked.length) {
-        wrap.classList.add('hidden')
-        return
-      }
-      wrap.classList.remove('hidden')
       clear(list)
-      wrap.prepend(h('h2', { class: 'section-title' }, 'Blocked'))
+      wrap.classList.toggle('hidden', blocked.length === 0)
       for (const u of blocked) {
         list.append(
           h(
@@ -868,12 +870,10 @@ function blocksBlock() {
           ),
         )
       }
-      wrap.append(list)
     } catch {
       wrap.classList.add('hidden')
     }
   }
-  wrap.classList.add('hidden')
   load()
   return wrap
 }
