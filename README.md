@@ -147,14 +147,43 @@ D1 does not pause, so there is no keep-alive to run.
 - **Near-realtime feed** — Nearby auto-refreshes (~20s) while it's the active, visible tab,
   in addition to refreshing on focus. (A push-based Durable Object feed would need a separate
   Worker deploy, so this stays within the single Pages project.)
-- **Web push notifications** — opt-in from the Me tab; the hirer is notified when their gig is
-  claimed and the worker when their work is rated. Sends are best-effort (a failed push never
-  affects the gig flow). Requires the `VAPID_*` secrets (created by `npm run setup`).
-  Note: end-to-end delivery to a device wasn't verified in CI — the crypto/builders are unit-tested.
+- **Web push notifications (all device platforms)** — opt-in from the Me tab. One server-side
+  implementation (the standard Web Push protocol: VAPID/RFC 8292 + aes128gcm/RFC 8291) covers
+  every platform through its own push service:
+  - **Android** — Chrome/Edge/Firefox/Samsung Internet (delivered via FCM's web-push endpoints);
+  - **iOS / iPadOS 16.4+** — Safari web push, after the user **adds PodNet to the Home Screen**
+    (an Apple requirement for web apps);
+  - **Desktop** — Chrome, Edge, Firefox, Safari on macOS/Windows/Linux.
+
+  Events: gig claimed → poster; work rated → worker; claim released → poster; new comment →
+  post author; your post turned into a gig → post author. Messages carry `Urgency` and a
+  per-entity `Topic` collapse key (bursts replace queued duplicates instead of stacking).
+  Sends are best-effort (a failed push never affects the gig flow); dead subscriptions are
+  pruned on 404/410. Requires the `VAPID_*` secrets (created by `npm run setup`).
+  The encryption is verified byte-for-byte against the **official RFC 8291 test vector** in CI,
+  which is what guarantees interop with Apple/FCM/Mozilla push services.
 - **Installable PWA** — manifest + icons; "Add to Home Screen" works on mobile. No third-party
   scripts or styles at all (strict CSP: `script-src 'self'; style-src 'self'`).
 - **Board → gig linkage** — a post that has been turned into a gig shows "now a gig ✓".
 - **Change password** — from the Me tab (requires the current password; rate-limited).
+- **Scheduling** — a hirer can post the hours that work for them plus the notice they need;
+  the worker claims by picking a slot inside that window, at least `notice` hours out. The
+  slot shows on both sides and clears if the claim is released.
+- **Gig messaging** — a private thread between the hirer and worker of a claimed gig
+  (directions, gate codes, timing), with a push notification to the other party. Not open
+  DMs by design — no spam surface.
+- **Reports & support** — report any gig/post/comment (with a reason) or file a support
+  ticket from the Me tab; you can see your ticket status there too.
+- **Admin & moderation** — a `users.is_admin` flag adds an Admin panel to the Me tab:
+  triage reports, remove content, resolve tickets, and verify businesses. Admin status
+  confers no gig authority — rating stays per-gig ownership, per the original trust model.
+  Grant the first admin (yourself) with:
+  ```bash
+  npx wrangler d1 execute podnet --remote --command "update users set is_admin=1 where email='you@example.com'"
+  ```
+- **Verified business ✔** — set a business name in the Me tab; that files a verification
+  request; an admin approves it and a ✔ badge appears next to your name everywhere.
+  Changing the name clears the badge until re-verified.
 
 ### Deferred by design
 - **Email password-reset / verification** — there is currently no free all-Cloudflare way to

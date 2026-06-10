@@ -35,6 +35,29 @@ describe('POST /push/subscribe', () => {
     expect(r.status).toBe(400)
   })
 
+  it('rejects a non-https endpoint (400)', async () => {
+    const u = await register()
+    const r = await call(
+      '/push/subscribe',
+      {
+        method: 'POST',
+        body: JSON.stringify({ ...sub, endpoint: 'http://push.example.com/abc' }),
+      },
+      u.token,
+    )
+    expect(r.status).toBe(400)
+  })
+
+  it('rejects a malformed endpoint URL (400)', async () => {
+    const u = await register()
+    const r = await call(
+      '/push/subscribe',
+      { method: 'POST', body: JSON.stringify({ ...sub, endpoint: 'not a url' }) },
+      u.token,
+    )
+    expect(r.status).toBe(400)
+  })
+
   it('requires authentication (401)', async () => {
     const r = await call('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) })
     expect(r.status).toBe(401)

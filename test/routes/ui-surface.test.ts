@@ -158,6 +158,48 @@ describe('UI surface sweep (no 404/500 from any api.js route)', () => {
     )
     check('DELETE /posts/:id', (await call(`/posts/${pid}`, { method: 'DELETE' }, a.token)).status)
 
+    // Messages, reports, business surface
+    const gid2 = await postGig(a.token)
+    check('POST /gigs/:id/claim (2)', (await claim(gid2, b.token)).status)
+    check(
+      'POST /gigs/:id/messages',
+      (
+        await call(
+          `/gigs/${gid2}/messages`,
+          { method: 'POST', body: JSON.stringify({ body: 'sweep message' }) },
+          a.token,
+        )
+      ).status,
+    )
+    check('GET /gigs/:id/messages', (await call(`/gigs/${gid2}/messages`, {}, b.token)).status)
+    check(
+      'POST /reports',
+      (
+        await call(
+          '/reports',
+          { method: 'POST', body: JSON.stringify({ kind: 'support', reason: 'sweep ticket' }) },
+          a.token,
+        )
+      ).status,
+    )
+    check('GET /reports/mine', (await call('/reports/mine', {}, a.token)).status)
+    check(
+      'PUT /me/business',
+      (
+        await call(
+          '/me/business',
+          { method: 'PUT', body: JSON.stringify({ business_name: 'Sweep LLC' }) },
+          a.token,
+        )
+      ).status,
+    )
+    // Admin endpoints exist (403 for non-admins, never 404)
+    check('GET /admin/reports', (await call('/admin/reports', {}, a.token)).status)
+    check(
+      'POST /admin/users/:id/verify',
+      (await call(`/admin/users/${b.id}/verify`, { method: 'POST' }, a.token)).status,
+    )
+
     // Profiles + push surface
     check('GET /users/:id', (await call(`/users/${b.id}`, {}, a.token)).status)
     check('GET /users/:id/reviews', (await call(`/users/${b.id}/reviews`, {}, a.token)).status)

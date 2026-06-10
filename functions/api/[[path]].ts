@@ -18,8 +18,9 @@ import { bboxDeltas, haversineMiles } from '../lib/geo'
 import { clampLimit, parseBefore } from '../lib/pagination'
 import { DUMMY_PASSWORD_HASH, hashPassword, verifyPassword } from '../lib/password'
 import { MAX_PHOTOS_PER_GIG, checkImageUpload, photoKey } from '../lib/photos'
-import { sendWebPush } from '../lib/push'
+import { type PushDeliveryOptions, sendWebPush, topicFor } from '../lib/push'
 import { rateLimitKey, windowStart } from '../lib/ratelimit'
+import { validateSlot, validateWindow } from '../lib/schedule'
 import { LIMITS, isValidLatLng, isValidRating, validateString } from '../lib/validate'
 
 type Env = {
@@ -87,7 +88,12 @@ async function issueSession(c: any, userId: string): Promise<string> {
  * Web Push — best-effort fan-out to a user's subscriptions. Never throws to
  * the caller; prunes dead subscriptions on 404/410. No-op if VAPID is unset.
  * ------------------------------------------------------------------ */
-async function notifyUser(c: any, userId: string, payload: any): Promise<void> {
+async function notifyUser(
+  c: any,
+  userId: string,
+  payload: any,
+  delivery: PushDeliveryOptions = {},
+): Promise<void> {
   const pub = c.env.VAPID_PUBLIC_KEY
   const priv = c.env.VAPID_PRIVATE_KEY
   if (!pub || !priv) return
@@ -107,7 +113,7 @@ async function notifyUser(c: any, userId: string, payload: any): Promise<void> {
   await Promise.all(
     (subs.results as any[]).map(async (s) => {
       try {
-        const res = await sendWebPush(s, body, { publicKey: pub, privateJwk, subject })
+        const res = await sendWebPush(s, body, { publicKey: pub, privateJwk, subject }, delivery)
         if (res.status === 404 || res.status === 410) {
           await c.env.DB.prepare('delete from push_subscriptions where endpoint = ?')
             .bind(s.endpoint)
@@ -237,12 +243,37 @@ app.use('*', auth)
 app.get('/me', async (c) => {
   const userId = c.get('userId')
   const user: any = await c.env.DB.prepare(
-    'select id, email, display_name, total_gigs, rating_sum, rating_count from users where id = ?',
+    'select id, email, display_name, total_gigs, rating_sum, rating_count, is_admin, business_name, verified from users where id = ?',
   )
     .bind(userId)
     .first()
   if (!user) return c.json({ error: 'not found' }, 404)
   return c.json(user)
+})
+
+// Set/update your business name. Changing it clears the verified badge and
+// files a verification request for an admin to review.
+app.put('/me/business', async (c) => {
+  const userId = c.get('userId')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const nameCheck = validateString(b.business_name, LIMITS.business_name, { required: false })
+  if (!nameCheck.ok) return c.json({ error: 'business_name too long' }, 400)
+  await c.env.DB.prepare('update users set business_name = ?, verified = 0 where id = ?')
+    .bind(nameCheck.value, userId)
+    .run()
+  if (nameCheck.value) {
+    await c.env.DB.prepare(
+      `insert into reports (id, reporter_id, kind, subject_id, reason) values (?, ?, 'user', ?, ?)`,
+    )
+      .bind(crypto.randomUUID(), userId, userId, `verification request: ${nameCheck.value}`)
+      .run()
+  }
+  return c.json({ ok: true, business_name: nameCheck.value, verified: 0 })
 })
 
 // Change password — requires the current password; rate-limited.
@@ -293,7 +324,7 @@ app.get('/gigs/near', async (c) => {
   const rows = await c.env.DB.prepare(
     `select g.id, g.status, g.task_type, g.neighborhood, g.cash_payout, g.est_hours,
             g.lat, g.lng, g.description, g.posted_by, g.from_post_id, g.created_at,
-            u.display_name as poster_name
+            u.display_name as poster_name, u.verified as poster_verified
        from gigs g
        join users u on u.id = g.posted_by
       where g.status = 'AVAILABLE'
@@ -390,11 +421,13 @@ app.post('/gigs', async (c) => {
   if (!isValidLatLng(lat, lng)) {
     return c.json({ error: 'valid lat and lng required' }, 400)
   }
+  const win = validateWindow(b.window_start, b.window_end, b.notice_hours)
+  if (!win.ok) return c.json({ error: win.reason }, 400)
 
   const id = crypto.randomUUID()
   await c.env.DB.prepare(
-    `insert into gigs (id, task_type, neighborhood, cash_payout, est_hours, lat, lng, description, posted_by, from_post_id)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `insert into gigs (id, task_type, neighborhood, cash_payout, est_hours, lat, lng, description, posted_by, from_post_id, window_start, window_end, notice_hours)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -407,39 +440,88 @@ app.post('/gigs', async (c) => {
       description,
       userId,
       from_post_id,
+      win.window_start,
+      win.window_end,
+      win.notice_hours,
     )
     .run()
+  // Best-effort: if this gig grew out of a board post, tell the post author.
+  if (from_post_id) {
+    const origin: any = await c.env.DB.prepare('select author_id from posts where id = ?')
+      .bind(from_post_id)
+      .first()
+    if (origin && origin.author_id !== userId) {
+      fireAndForget(
+        c,
+        notifyUser(
+          c,
+          origin.author_id,
+          {
+            title: 'Your post became a gig',
+            body: `${task_type} — ${cash_payout} offered`,
+            url: '/',
+          },
+          { topic: topicFor(from_post_id), urgency: 'normal' },
+        ),
+      )
+    }
+  }
   return c.json({ id }, 201)
 })
 
 // Claim — atomic single statement; 0 changes means already claimed or your own.
+// Windowed gigs require the worker to pick a slot inside the hirer's window,
+// at least notice_hours in the future; the slot is stored on the gig.
 app.post('/gigs/:id/claim', async (c) => {
   const userId = c.get('userId')
   const id = c.req.param('id')
+  let slotInput: unknown = null
+  try {
+    const b = await c.req.json()
+    slotInput = b?.scheduled_at ?? null
+  } catch {
+    // no body — fine for windowless gigs
+  }
+
+  const pre: any = await c.env.DB.prepare(
+    'select window_start, window_end, notice_hours from gigs where id = ?',
+  )
+    .bind(id)
+    .first()
+  if (!pre) return c.json({ error: 'not found' }, 404)
+  const slot = validateSlot(slotInput, pre.window_start, pre.window_end, pre.notice_hours ?? 0)
+  if (!slot.ok) return c.json({ error: slot.reason }, 400)
+
   const res = await c.env.DB.prepare(
-    `update gigs set status = 'CLAIMED', claimed_by = ?
+    `update gigs set status = 'CLAIMED', claimed_by = ?, scheduled_at = ?
       where id = ? and status = 'AVAILABLE' and posted_by <> ?`,
   )
-    .bind(userId, id, userId)
+    .bind(userId, slot.scheduled_at, id, userId)
     .run()
   if (res.meta.changes !== 1) {
     return c.json({ error: 'gig is unavailable or your own' }, 409)
   }
-  // Best-effort: tell the poster their gig was claimed.
+  // Best-effort: tell the poster their gig was claimed (and for when).
   const g: any = await c.env.DB.prepare('select posted_by, task_type from gigs where id = ?')
     .bind(id)
     .first()
   if (g) {
+    const when = slot.scheduled_at ? ` for ${new Date(slot.scheduled_at).toLocaleString()}` : ''
     fireAndForget(
       c,
-      notifyUser(c, g.posted_by, {
-        title: 'Your gig was claimed',
-        body: `${g.task_type} — someone is on it`,
-        url: '/',
-      }),
+      notifyUser(
+        c,
+        g.posted_by,
+        {
+          title: 'Your gig was claimed',
+          body: `${g.task_type} — someone is on it${when}`,
+          url: '/',
+        },
+        { topic: topicFor(id), urgency: 'high' },
+      ),
     )
   }
-  return c.json({ ok: true })
+  return c.json({ ok: true, scheduled_at: slot.scheduled_at })
 })
 
 // Complete + review — only the poster, only when CLAIMED, rating 1..5.
@@ -480,11 +562,16 @@ app.post('/gigs/:id/complete', async (c) => {
   // Best-effort: tell the worker they were paid and rated.
   fireAndForget(
     c,
-    notifyUser(c, gig.claimed_by, {
-      title: `You were rated ${rating}★`,
-      body: `${gig.task_type} — paid ${gig.cash_payout}`,
-      url: '/',
-    }),
+    notifyUser(
+      c,
+      gig.claimed_by,
+      {
+        title: `You were rated ${rating}★`,
+        body: `${gig.task_type} — paid ${gig.cash_payout}`,
+        url: '/',
+      },
+      { topic: topicFor(id), urgency: 'high' },
+    ),
   )
   return c.json({ ok: true })
 })
@@ -564,7 +651,7 @@ app.post('/gigs/:id/abandon', async (c) => {
   const userId = c.get('userId')
   const id = c.req.param('id')
   const res = await c.env.DB.prepare(
-    `update gigs set status = 'AVAILABLE', claimed_by = null
+    `update gigs set status = 'AVAILABLE', claimed_by = null, scheduled_at = null
       where id = ? and status = 'CLAIMED' and claimed_by = ?`,
   )
     .bind(id, userId)
@@ -572,7 +659,94 @@ app.post('/gigs/:id/abandon', async (c) => {
   if (res.meta.changes !== 1) {
     return c.json({ error: 'not your claimed gig' }, 403)
   }
+  // Best-effort: tell the poster their gig is back on the market.
+  const g: any = await c.env.DB.prepare('select posted_by, task_type from gigs where id = ?')
+    .bind(id)
+    .first()
+  if (g) {
+    fireAndForget(
+      c,
+      notifyUser(
+        c,
+        g.posted_by,
+        {
+          title: 'Worker released your gig',
+          body: `${g.task_type} — it's available again`,
+          url: '/',
+        },
+        { topic: topicFor(id), urgency: 'high' },
+      ),
+    )
+  }
   return c.json({ ok: true })
+})
+
+/* ============================= MESSAGES ============================ */
+// Private per-gig thread between the hirer and the worker — the coordination
+// channel (directions, gate codes, timing changes). Not open DMs: the thread
+// exists only between the two parties of a claimed gig.
+
+async function gigParties(db: D1Database, gigId: string): Promise<any | null> {
+  return db
+    .prepare('select id, posted_by, claimed_by, status, task_type from gigs where id = ?')
+    .bind(gigId)
+    .first()
+}
+
+app.get('/gigs/:id/messages', async (c) => {
+  const userId = c.get('userId')
+  const gig: any = await gigParties(c.env.DB, c.req.param('id'))
+  if (!gig) return c.json({ error: 'not found' }, 404)
+  if (gig.posted_by !== userId && gig.claimed_by !== userId) {
+    return c.json({ error: 'only the hirer and worker can read this thread' }, 403)
+  }
+  const rows = await c.env.DB.prepare(
+    `select m.id, m.sender_id, m.body, m.created_at, u.display_name as sender_name
+       from gig_messages m join users u on u.id = m.sender_id
+      where m.gig_id = ? order by m.created_at asc`,
+  )
+    .bind(gig.id)
+    .all()
+  return c.json(rows.results)
+})
+
+app.post('/gigs/:id/messages', async (c) => {
+  const userId = c.get('userId')
+  const gig: any = await gigParties(c.env.DB, c.req.param('id'))
+  if (!gig) return c.json({ error: 'not found' }, 404)
+  if (gig.posted_by !== userId && gig.claimed_by !== userId) {
+    return c.json({ error: 'only the hirer and worker can message here' }, 403)
+  }
+  if (!gig.claimed_by) {
+    return c.json({ error: 'messaging opens once the gig is claimed' }, 409)
+  }
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const bodyCheck = validateString(b.body, LIMITS.message_body)
+  if (!bodyCheck.ok || !bodyCheck.value)
+    return c.json({ error: 'message required (within length limit)' }, 400)
+  const id = crypto.randomUUID()
+  await c.env.DB.prepare(
+    'insert into gig_messages (id, gig_id, sender_id, body) values (?, ?, ?, ?)',
+  )
+    .bind(id, gig.id, userId, bodyCheck.value)
+    .run()
+  // Best-effort: ping the other party; bursts collapse per gig.
+  const other = gig.posted_by === userId ? gig.claimed_by : gig.posted_by
+  fireAndForget(
+    c,
+    notifyUser(
+      c,
+      other,
+      { title: `Message · ${gig.task_type}`, body: bodyCheck.value.slice(0, 80), url: '/' },
+      { topic: topicFor(gig.id), urgency: 'high' },
+    ),
+  )
+  return c.json({ id }, 201)
 })
 
 /* ============================== PHOTOS ============================= */
@@ -673,7 +847,7 @@ app.get('/posts', async (c) => {
   const before = parseBefore(c.req.query('before'))
   const rows = await c.env.DB.prepare(
     `select p.id, p.author_id, p.body, p.area_label, p.lat, p.lng, p.created_at,
-            u.display_name as author_name,
+            u.display_name as author_name, u.verified as author_verified,
             (select count(*) from post_comments pc where pc.post_id = p.id) as comment_count,
             (select count(*) from post_interest pi where pi.post_id = p.id) as interest_count,
             (select count(*) from gigs g where g.from_post_id = p.id) as gig_count,
@@ -722,7 +896,7 @@ app.get('/posts/:id', async (c) => {
   const id = c.req.param('id')
   const post: any = await c.env.DB.prepare(
     `select p.id, p.author_id, p.body, p.area_label, p.lat, p.lng, p.created_at,
-            u.display_name as author_name,
+            u.display_name as author_name, u.verified as author_verified,
             (select count(*) from post_interest pi where pi.post_id = p.id) as interest_count,
             (select count(*) from gigs g where g.from_post_id = p.id) as gig_count,
             exists(select 1 from post_interest pi where pi.post_id = p.id and pi.user_id = ?) as i_am_interested
@@ -733,7 +907,7 @@ app.get('/posts/:id', async (c) => {
     .first()
   if (!post) return c.json({ error: 'not found' }, 404)
   const comments = await c.env.DB.prepare(
-    `select pc.id, pc.post_id, pc.author_id, pc.body, pc.created_at, u.display_name as author_name
+    `select pc.id, pc.post_id, pc.author_id, pc.body, pc.created_at, u.display_name as author_name, u.verified as author_verified
        from post_comments pc join users u on u.id = pc.author_id
       where pc.post_id = ? order by pc.created_at asc`,
   )
@@ -794,7 +968,9 @@ app.post('/posts/:id/comments', async (c) => {
   if (!bodyCheck.ok || !bodyCheck.value)
     return c.json({ error: 'body required (within length limit)' }, 400)
   const body = bodyCheck.value
-  const post = await c.env.DB.prepare('select id from posts where id = ?').bind(postId).first()
+  const post: any = await c.env.DB.prepare('select id, author_id, body from posts where id = ?')
+    .bind(postId)
+    .first()
   if (!post) return c.json({ error: 'post not found' }, 404)
   const id = crypto.randomUUID()
   await c.env.DB.prepare(
@@ -802,6 +978,23 @@ app.post('/posts/:id/comments', async (c) => {
   )
     .bind(id, postId, userId, body)
     .run()
+  // Best-effort: tell the post author (not when commenting on your own post).
+  // Topic = post id, so a burst of comments collapses to one queued notification.
+  if (post.author_id !== userId) {
+    fireAndForget(
+      c,
+      notifyUser(
+        c,
+        post.author_id,
+        {
+          title: 'New comment on your post',
+          body: String(post.body).slice(0, 80),
+          url: '/',
+        },
+        { topic: topicFor(postId), urgency: 'normal' },
+      ),
+    )
+  }
   return c.json({ id }, 201)
 })
 
@@ -865,7 +1058,7 @@ app.delete('/posts/:id/interest', async (c) => {
 // Public columns only — never email or password_hash.
 app.get('/users/:id', async (c) => {
   const user: any = await c.env.DB.prepare(
-    `select id, display_name, total_gigs, rating_sum, rating_count, created_at from users where id = ?`,
+    `select id, display_name, total_gigs, rating_sum, rating_count, business_name, verified, created_at from users where id = ?`,
   )
     .bind(c.req.param('id'))
     .first()
@@ -878,6 +1071,8 @@ app.get('/users/:id', async (c) => {
     total_gigs: user.total_gigs,
     rating_count: user.rating_count,
     average_rating: average,
+    business_name: user.business_name,
+    verified: user.verified,
     created_at: user.created_at,
   })
 })
@@ -928,6 +1123,17 @@ app.post('/push/subscribe', async (c) => {
   if (typeof endpoint !== 'string' || !p256dh || !auth) {
     return c.json({ error: 'endpoint and keys required' }, 400)
   }
+  // Push service endpoints are always https; reject anything else so we never
+  // POST encrypted payloads to an arbitrary scheme/host of the client's choosing.
+  let endpointUrl: URL
+  try {
+    endpointUrl = new URL(endpoint)
+  } catch {
+    return c.json({ error: 'invalid endpoint' }, 400)
+  }
+  if (endpointUrl.protocol !== 'https:') {
+    return c.json({ error: 'endpoint must be https' }, 400)
+  }
   await c.env.DB.prepare(
     `insert into push_subscriptions (endpoint, user_id, p256dh, auth) values (?, ?, ?, ?)
      on conflict(endpoint) do update set user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth`,
@@ -950,6 +1156,125 @@ app.delete('/push/subscribe', async (c) => {
   await c.env.DB.prepare('delete from push_subscriptions where endpoint = ? and user_id = ?')
     .bind(b.endpoint, userId)
     .run()
+  return c.json({ ok: true })
+})
+
+/* ======================= REPORTS / SUPPORT ======================== */
+// One table covers content/user reports, business-verification requests, and
+// support tickets — an admin works through them all in the same queue.
+
+const REPORT_KINDS = new Set(['post', 'comment', 'gig', 'user', 'support'])
+
+app.post('/reports', async (c) => {
+  if (!(await rateLimit(c, 'report', 5, 300))) {
+    return c.json({ error: 'too many reports — try again shortly' }, 429)
+  }
+  const userId = c.get('userId')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const kind = String(b.kind ?? '')
+  if (!REPORT_KINDS.has(kind)) return c.json({ error: 'invalid kind' }, 400)
+  const reasonCheck = validateString(b.reason, LIMITS.report_reason)
+  if (!reasonCheck.ok || !reasonCheck.value) return c.json({ error: 'reason required' }, 400)
+  const subject_id = b.subject_id ? String(b.subject_id) : null
+  if (kind !== 'support' && !subject_id) return c.json({ error: 'subject_id required' }, 400)
+  const id = crypto.randomUUID()
+  await c.env.DB.prepare(
+    'insert into reports (id, reporter_id, kind, subject_id, reason) values (?, ?, ?, ?, ?)',
+  )
+    .bind(id, userId, kind, subject_id, reasonCheck.value)
+    .run()
+  return c.json({ id }, 201)
+})
+
+// Your own tickets/reports with status — so support requests aren't a black hole.
+app.get('/reports/mine', async (c) => {
+  const rows = await c.env.DB.prepare(
+    'select id, kind, subject_id, reason, status, created_at from reports where reporter_id = ? order by created_at desc limit 50',
+  )
+    .bind(c.get('userId'))
+    .all()
+  return c.json(rows.results)
+})
+
+/* ============================== ADMIN ============================== */
+// Moderation role: a users.is_admin flag the operator grants via SQL (see
+// README). Admins triage reports, remove content, and verify businesses.
+// Admin status confers NO gig authority — rating stays per-gig ownership.
+
+async function isAdmin(c: any): Promise<boolean> {
+  const row: any = await c.env.DB.prepare('select is_admin from users where id = ?')
+    .bind(c.get('userId'))
+    .first()
+  return !!row?.is_admin
+}
+
+app.get('/admin/reports', async (c) => {
+  if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)
+  const rows = await c.env.DB.prepare(
+    `select r.id, r.kind, r.subject_id, r.reason, r.status, r.created_at,
+            u.display_name as reporter_name
+       from reports r join users u on u.id = r.reporter_id
+      order by case r.status when 'OPEN' then 0 else 1 end, r.created_at desc
+      limit 100`,
+  ).all()
+  return c.json(rows.results)
+})
+
+app.post('/admin/reports/:id/resolve', async (c) => {
+  if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)
+  const res = await c.env.DB.prepare(`update reports set status = 'RESOLVED' where id = ?`)
+    .bind(c.req.param('id'))
+    .run()
+  if (res.meta.changes !== 1) return c.json({ error: 'not found' }, 404)
+  return c.json({ ok: true })
+})
+
+// Grant or revoke the verified-business badge.
+app.post('/admin/users/:id/verify', async (c) => {
+  if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)
+  let b: any = {}
+  try {
+    b = await c.req.json()
+  } catch {
+    // default: verify
+  }
+  const value = b?.verified === false ? 0 : 1
+  const res = await c.env.DB.prepare('update users set verified = ? where id = ?')
+    .bind(value, c.req.param('id'))
+    .run()
+  if (res.meta.changes !== 1) return c.json({ error: 'not found' }, 404)
+  return c.json({ ok: true, verified: value })
+})
+
+// Admin content removal (moderation): posts cascade comments; comments direct.
+app.delete('/admin/posts/:id', async (c) => {
+  if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)
+  const res = await c.env.DB.prepare('delete from posts where id = ?').bind(c.req.param('id')).run()
+  if (res.meta.changes < 1) return c.json({ error: 'not found' }, 404)
+  return c.json({ ok: true })
+})
+
+app.delete('/admin/comments/:id', async (c) => {
+  if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)
+  const res = await c.env.DB.prepare('delete from post_comments where id = ?')
+    .bind(c.req.param('id'))
+    .run()
+  if (res.meta.changes < 1) return c.json({ error: 'not found' }, 404)
+  return c.json({ ok: true })
+})
+
+app.delete('/admin/gigs/:id', async (c) => {
+  if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)
+  // COMPLETED gigs carry reviews/reputation — even admins don't rewrite history.
+  const res = await c.env.DB.prepare(`delete from gigs where id = ? and status <> 'COMPLETED'`)
+    .bind(c.req.param('id'))
+    .run()
+  if (res.meta.changes < 1) return c.json({ error: 'not found or completed' }, 404)
   return c.json({ ok: true })
 })
 

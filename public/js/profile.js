@@ -10,6 +10,7 @@ import {
   emptyState,
   errorState,
   fmtDate,
+  fmtDateTime,
   h,
   money,
   openSheet,
@@ -43,17 +44,22 @@ async function load(root) {
     return
   }
   try {
-    const [profile, reviews, mine] = await Promise.all([
+    const [pub, self, reviews, mine] = await Promise.all([
       api.user(me.id),
+      api.me(),
       api.userReviews(me.id),
       api.myGigs(),
     ])
+    const profile = { ...pub, ...self, average_rating: pub.average_rating }
     clear(root)
     root.append(headerBlock(me, profile))
     root.append(notificationsBlock())
+    root.append(businessBlock(profile))
     root.append(changePasswordBlock())
     root.append(gigsBlock(mine, root))
     root.append(reviewsBlock(reviews, me.id))
+    root.append(supportBlock())
+    if (profile.is_admin) root.append(adminBlock(root))
   } catch (err) {
     clear(root)
     root.append(
@@ -150,9 +156,13 @@ function postedGigCard(g, root) {
     g.worker_name
       ? h('div', { class: 'gig-meta' }, 'Worker: ', nameLink(g.worker_name, g.claimed_by))
       : null,
+    g.scheduled_at
+      ? h('div', { class: 'gig-meta sched' }, `Scheduled: ${fmtDateTime(g.scheduled_at)}`)
+      : null,
     photoStrip(g.photos, api.imgUrl),
   )
 
+  if (g.status !== 'AVAILABLE') card.append(messagesThread(g))
   if (g.status === 'AVAILABLE') {
     // Edit (reuses the Post form) + delete, available only before anyone claims it.
     card.append(
@@ -194,7 +204,11 @@ function claimedGigCard(g, root) {
     g.poster_name
       ? h('div', { class: 'gig-meta' }, 'Hirer: ', nameLink(g.poster_name, g.posted_by))
       : null,
+    g.scheduled_at
+      ? h('div', { class: 'gig-meta sched' }, `Scheduled: ${fmtDateTime(g.scheduled_at)}`)
+      : null,
   )
+  card.append(messagesThread(g))
   if (g.status === 'CLAIMED') {
     card.append(
       h(
@@ -277,19 +291,21 @@ function reviewCard(r) {
   )
 }
 
-// A tappable name that opens another user's public portfolio.
-export function nameLink(name, userId) {
-  if (!userId) return document.createTextNode(name || 'Someone')
+// A tappable name that opens another user's public portfolio. `verified`
+// renders the admin-granted business badge.
+export function nameLink(name, userId, verified = 0) {
+  const label = verified ? `${name || 'Someone'} ✔` : name || 'Someone'
+  if (!userId) return document.createTextNode(label)
   return h(
     'button',
     {
-      class: 'link-btn',
+      class: verified ? 'link-btn vbadge' : 'link-btn',
       onClick: (e) => {
         e.stopPropagation()
         openUserProfile(userId)
       },
     },
-    name || 'Someone',
+    label,
   )
 }
 
@@ -302,7 +318,18 @@ export async function openUserProfile(userId) {
     clear(body)
     const avg = profile.average_rating != null ? profile.average_rating.toFixed(2) : '—'
     body.append(
-      h('h2', { class: 'me-name' }, profile.display_name || 'Neighbor'),
+      h(
+        'h2',
+        { class: 'me-name' },
+        (profile.display_name || 'Neighbor') + (profile.verified ? ' ✔' : ''),
+      ),
+      profile.business_name
+        ? h(
+            'div',
+            { class: 'gig-meta' },
+            profile.business_name + (profile.verified ? ' · verified business' : ''),
+          )
+        : null,
       statsRow(avg, profile),
       h('h3', { class: 'subhead' }, 'Reviews'),
     )
@@ -432,4 +459,282 @@ async function enableNotifications(btn) {
   } finally {
     btn.disabled = false
   }
+}
+
+/* --- Gig message thread (hirer ↔ worker) --- */
+
+function messagesThread(g) {
+  const wrap = h('div', { class: 'msg-wrap' })
+  const list = h('div', { class: 'comments hidden' })
+  const input = h('input', { class: 'input', type: 'text', placeholder: 'Message…' })
+  const form = h(
+    'form',
+    {
+      class: 'comment-form hidden',
+      onSubmit: async (e) => {
+        e.preventDefault()
+        const text = input.value.trim()
+        if (!text) return
+        try {
+          await api.sendGigMessage(g.id, text)
+          input.value = ''
+          await loadThread()
+        } catch (err) {
+          toast(err instanceof ApiError ? err.message : 'Could not send', 'error')
+        }
+      },
+    },
+    input,
+    h('button', { class: 'btn-ghost', type: 'submit' }, 'Send'),
+  )
+
+  async function loadThread() {
+    try {
+      const msgs = await api.gigMessages(g.id)
+      clear(list)
+      if (!msgs.length) list.append(h('div', { class: 'gig-meta' }, 'No messages yet.'))
+      for (const m of msgs) {
+        list.append(
+          h(
+            'div',
+            { class: 'comment' },
+            h('span', { class: 'comment-author' }, m.sender_name || 'Someone'),
+            h('span', { class: 'comment-body' }, m.body),
+            h('span', { class: 'comment-date' }, fmtDate(m.created_at)),
+          ),
+        )
+      }
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Could not load messages', 'error')
+    }
+  }
+
+  const toggle = h(
+    'button',
+    {
+      class: 'btn-ghost',
+      onClick: async () => {
+        const open = list.classList.toggle('hidden')
+        form.classList.toggle('hidden', open)
+        toggle.textContent = open ? '💬 Messages' : 'Hide messages'
+        if (!open) await loadThread()
+      },
+    },
+    '💬 Messages',
+  )
+  wrap.append(toggle, list, form)
+  return wrap
+}
+
+/* --- Business / verification --- */
+
+function businessBlock(profile) {
+  const name = h('input', {
+    class: 'input',
+    type: 'text',
+    placeholder: 'Business name (optional)',
+  })
+  if (profile.business_name) name.value = profile.business_name
+  const status = profile.business_name
+    ? profile.verified
+      ? '✔ Verified business'
+      : 'Verification pending — an admin will review it'
+    : 'Registering as a business adds a ✔ badge once an admin verifies you.'
+  const save = h('button', { class: 'btn-ghost', type: 'submit' }, 'Save business name')
+  return h(
+    'form',
+    {
+      class: 'card form',
+      onSubmit: async (e) => {
+        e.preventDefault()
+        save.disabled = true
+        try {
+          await api.setBusiness(name.value.trim() || null)
+          toast(name.value.trim() ? 'Saved — verification requested' : 'Business name cleared')
+        } catch (err) {
+          toast(err instanceof ApiError ? err.message : 'Could not save', 'error')
+        } finally {
+          save.disabled = false
+        }
+      },
+    },
+    h('div', { class: 'gig-meta' }, status),
+    name,
+    save,
+  )
+}
+
+/* --- Help & support --- */
+
+function supportBlock() {
+  const wrap = h(
+    'div',
+    { class: 'me-section' },
+    h('h2', { class: 'section-title' }, 'Help & support'),
+  )
+  const text = h('textarea', {
+    class: 'input',
+    rows: '2',
+    placeholder: 'Describe the problem — an admin will see this.',
+  })
+  const send = h('button', { class: 'btn-ghost', type: 'submit' }, 'Send to support')
+  const tickets = h('div', { class: 'list' })
+
+  async function loadTickets() {
+    try {
+      const mine = await api.myReports()
+      clear(tickets)
+      for (const t of mine.filter((r) => r.kind === 'support').slice(0, 5)) {
+        tickets.append(
+          h(
+            'div',
+            { class: 'gig-meta' },
+            `${t.status === 'OPEN' ? '⏳' : '✓'} ${t.reason.slice(0, 60)} · ${fmtDate(t.created_at)}`,
+          ),
+        )
+      }
+    } catch {
+      // non-fatal
+    }
+  }
+  loadTickets()
+
+  wrap.append(
+    h(
+      'form',
+      {
+        class: 'card form',
+        onSubmit: async (e) => {
+          e.preventDefault()
+          const reason = text.value.trim()
+          if (!reason) return
+          send.disabled = true
+          try {
+            await api.report('support', null, reason)
+            text.value = ''
+            toast('Sent — you can check the status here')
+            await loadTickets()
+          } catch (err) {
+            toast(err instanceof ApiError ? err.message : 'Could not send', 'error')
+          } finally {
+            send.disabled = false
+          }
+        },
+      },
+      text,
+      send,
+      tickets,
+    ),
+  )
+  return wrap
+}
+
+/* --- Admin panel (visible only to users with is_admin) --- */
+
+function adminBlock(root) {
+  const wrap = h('div', { class: 'me-section' }, h('h2', { class: 'section-title' }, 'Admin'))
+  const list = h('div', { class: 'list' })
+  wrap.append(list)
+
+  async function loadQueue() {
+    clear(list)
+    list.append(spinner('Loading reports…'))
+    try {
+      const reports = await api.adminReports()
+      clear(list)
+      const open = reports.filter((r) => r.status === 'OPEN')
+      if (!open.length) {
+        list.append(emptyState('No open reports.'))
+        return
+      }
+      for (const r of open) list.append(adminRow(r, loadQueue))
+    } catch (err) {
+      clear(list)
+      list.append(errorState(err instanceof ApiError ? err.message : 'Could not load', loadQueue))
+    }
+  }
+
+  function adminRow(r, reload) {
+    const actions = h('div', { class: 'post-actions' })
+    const resolve = h(
+      'button',
+      {
+        class: 'btn-ghost',
+        onClick: async () => {
+          await api.resolveReport(r.id).catch(() => toast('Failed', 'error'))
+          reload()
+        },
+      },
+      'Resolve',
+    )
+    // Verification requests carry kind=user + the requester as subject.
+    if (r.kind === 'user' && r.reason.startsWith('verification request')) {
+      actions.append(
+        h(
+          'button',
+          {
+            class: 'btn-ghost',
+            onClick: async () => {
+              try {
+                await api.verifyUser(r.subject_id, true)
+                await api.resolveReport(r.id)
+                toast('Verified ✔')
+                reload()
+              } catch (err) {
+                toast(err instanceof ApiError ? err.message : 'Failed', 'error')
+              }
+            },
+          },
+          'Verify ✔',
+        ),
+      )
+    }
+    // Content reports get a remove button matching their kind.
+    const removers = {
+      post: api.adminDeletePost,
+      comment: api.adminDeleteComment,
+      gig: api.adminDeleteGig,
+    }
+    if (removers[r.kind] && r.subject_id) {
+      actions.append(
+        h(
+          'button',
+          {
+            class: 'btn-ghost danger',
+            onClick: async () => {
+              try {
+                await removers[r.kind](r.subject_id)
+                await api.resolveReport(r.id)
+                toast('Content removed')
+                reload()
+              } catch (err) {
+                toast(err instanceof ApiError ? err.message : 'Failed', 'error')
+              }
+            },
+          },
+          'Remove content',
+        ),
+      )
+    }
+    actions.append(resolve)
+    return h(
+      'div',
+      { class: 'card' },
+      h(
+        'div',
+        { class: 'post-head' },
+        h('span', { class: 'post-author' }, `${r.kind} report`),
+        h(
+          'span',
+          { class: 'post-area' },
+          `by ${r.reporter_name || '?'} · ${fmtDate(r.created_at)}`,
+        ),
+      ),
+      h('p', { class: 'post-body' }, r.reason),
+      actions,
+    )
+  }
+
+  loadQueue()
+  return wrap
 }

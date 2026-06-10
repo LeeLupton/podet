@@ -72,7 +72,8 @@ export const api = {
   createGig: (gig) => request('/gigs', { method: 'POST', body: gig }),
   updateGig: (id, gig) => request(`/gigs/${id}`, { method: 'PUT', body: gig }),
   deleteGig: (id) => request(`/gigs/${id}`, { method: 'DELETE' }),
-  claimGig: (id) => request(`/gigs/${id}/claim`, { method: 'POST' }),
+  claimGig: (id, scheduled_at) =>
+    request(`/gigs/${id}/claim`, { method: 'POST', body: { scheduled_at: scheduled_at ?? null } }),
   abandonGig: (id) => request(`/gigs/${id}/abandon`, { method: 'POST' }),
   uploadGigPhoto: (gigId, file) => request(`/gigs/${gigId}/photos`, { method: 'POST', raw: file }),
   deleteGigPhoto: (gigId, photoId) =>
@@ -99,6 +100,27 @@ export const api = {
   user: (id) => request(`/users/${id}`),
   userReviews: (id, before) =>
     request(`/users/${id}/reviews${before ? `?before=${encodeURIComponent(before)}` : ''}`),
+
+  // Gig messages (hirer ↔ worker)
+  gigMessages: (gigId) => request(`/gigs/${gigId}/messages`),
+  sendGigMessage: (gigId, body) =>
+    request(`/gigs/${gigId}/messages`, { method: 'POST', body: { body } }),
+
+  // Reports / support / verification
+  report: (kind, subject_id, reason) =>
+    request('/reports', { method: 'POST', body: { kind, subject_id, reason } }),
+  myReports: () => request('/reports/mine'),
+  setBusiness: (business_name) =>
+    request('/me/business', { method: 'PUT', body: { business_name } }),
+
+  // Admin
+  adminReports: () => request('/admin/reports'),
+  resolveReport: (id) => request(`/admin/reports/${id}/resolve`, { method: 'POST' }),
+  verifyUser: (id, verified = true) =>
+    request(`/admin/users/${id}/verify`, { method: 'POST', body: { verified } }),
+  adminDeletePost: (id) => request(`/admin/posts/${id}`, { method: 'DELETE' }),
+  adminDeleteComment: (id) => request(`/admin/comments/${id}`, { method: 'DELETE' }),
+  adminDeleteGig: (id) => request(`/admin/gigs/${id}`, { method: 'DELETE' }),
 
   // Web push
   pushKey: () => request('/push/key'),

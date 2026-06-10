@@ -12,6 +12,9 @@ export const LIMITS = {
   comment_body: 1000,
   area_label: 120,
   review_body: 1000,
+  message_body: 1000,
+  report_reason: 500,
+  business_name: 80,
   photo_bytes: 5 * 1024 * 1024, // 5 MB
 }
 

@@ -49,9 +49,12 @@ export function toast(message, kind = 'info') {
 }
 
 // A bottom sheet / modal. Returns a close() fn. Tapping the backdrop closes it.
-export function openSheet(contentNode) {
+// Sheets anchor to the bottom on phones (thumb zone); pass { center: true } for
+// content that should float centered instead (e.g. the photo viewer). On wide
+// screens CSS centers every sheet regardless.
+export function openSheet(contentNode, { center = false } = {}) {
   const sheet = h('div', { class: 'sheet' }, contentNode)
-  const backdrop = h('div', { class: 'backdrop' }, sheet)
+  const backdrop = h('div', { class: center ? 'backdrop backdrop-center' : 'backdrop' }, sheet)
   const close = () => backdrop.remove()
   backdrop.addEventListener('click', (e) => {
     if (e.target === backdrop) close()
@@ -72,6 +75,7 @@ export function openImage(url) {
       { class: 'sheet-body' },
       h('img', { class: 'photo-full', src: url, alt: 'work photo' }),
     ),
+    { center: true },
   )
 }
 
@@ -122,6 +126,26 @@ export function fmtDate(iso) {
   const d = new Date(`${iso.replace(' ', 'T')}Z`)
   if (Number.isNaN(d.getTime())) return iso
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+// Local-readable date+time for scheduled slots / windows.
+export function fmtDateTime(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+// <input type="datetime-local"> value (local time) → ISO string, or null.
+export function localInputToIso(value) {
+  if (!value) return null
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
 }
 
 export function money(n) {
