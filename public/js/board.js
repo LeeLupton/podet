@@ -140,7 +140,7 @@ function postCard(p) {
   const counts = h(
     'div',
     { class: 'post-counts' },
-    `${p.comment_count} comment${p.comment_count === 1 ? '' : 's'} · ${p.interest_count} helping`,
+    `${p.comment_count} comment${p.comment_count === 1 ? '' : 's'} · ${p.interest_count} helping${p.gig_count > 0 ? ' · now a gig ✓' : ''}`,
   )
 
   const expandWrap = h('div', { class: 'post-expand hidden' })
@@ -216,7 +216,7 @@ async function renderExpanded(p, wrap, reloadList) {
         }
       },
     },
-    'Turn into a gig',
+    full.gig_count > 0 ? 'Post another gig from this' : 'Turn into a gig',
   )
 
   const actions = h('div', { class: 'post-actions' }, helpBtn, turnBtn)

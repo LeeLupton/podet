@@ -1,13 +1,11 @@
 # Security headers for static assets (HTML/JS/CSS). Pages applies these to asset
 # responses; the API (functions/) sets its own via Hono secureHeaders().
-#
-# CSP note: the Tailwind v3 Play CDN compiles in-browser, so it requires
-# 'unsafe-eval' + 'unsafe-inline'. Precompiling Tailwind to a static stylesheet
-# (a small build step) would let us drop both — see README "Hardening notes".
+# Strict CSP: no third-party scripts/styles — everything is same-origin
+# (styles live in /css/app.css, scripts are our ES modules).
 /*
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
   Referrer-Policy: strict-origin-when-cross-origin
   Strict-Transport-Security: max-age=31536000; includeSubDomains
-  Permissions-Policy: geolocation=(self), camera=(), microphone=()
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+  Permissions-Policy: geolocation=(self), camera=(self), microphone=()
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'

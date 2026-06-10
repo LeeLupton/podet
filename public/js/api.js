@@ -59,6 +59,8 @@ export const api = {
   login: (email, password) => request('/login', { method: 'POST', body: { email, password } }),
   logout: () => request('/logout', { method: 'POST' }),
   me: () => request('/me'),
+  changePassword: (current_password, new_password) =>
+    request('/me/password', { method: 'POST', body: { current_password, new_password } }),
 
   // Gigs
   nearbyGigs: (lat, lng, radius) =>

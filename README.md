@@ -151,7 +151,16 @@ D1 does not pause, so there is no keep-alive to run.
   claimed and the worker when their work is rated. Sends are best-effort (a failed push never
   affects the gig flow). Requires the `VAPID_*` secrets (created by `npm run setup`).
   Note: end-to-end delivery to a device wasn't verified in CI — the crypto/builders are unit-tested.
-- The Tailwind v3 Play CDN compiles in-browser and so requires `'unsafe-eval'`/`'unsafe-inline'`
-  in the CSP. Precompiling Tailwind to a static stylesheet (a small build step) would let you
-  drop both — a worthwhile follow-up for stricter CSP.
+- **Installable PWA** — manifest + icons; "Add to Home Screen" works on mobile. No third-party
+  scripts or styles at all (strict CSP: `script-src 'self'; style-src 'self'`).
+- **Board → gig linkage** — a post that has been turned into a gig shows "now a gig ✓".
+- **Change password** — from the Me tab (requires the current password; rate-limited).
+
+### Deferred by design
+- **Email password-reset / verification** — there is currently no free all-Cloudflare way to
+  send email (MailChannels' free Workers route was discontinued). Adding it means a
+  third-party provider behind a secret; until then, keep your password safe — there is no
+  recovery path.
+- **Push-based realtime (Durable Objects)** — would require deploying a second Worker
+  alongside the Pages project, breaking the one-command single-deployment setup.
 
