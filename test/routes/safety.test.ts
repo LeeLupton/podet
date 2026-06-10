@@ -173,3 +173,30 @@ describe('admin stats gate', () => {
     expect((await call('/admin/stats', {}, u.token)).status).toBe(403)
   })
 })
+
+describe('content-creation rate limits', () => {
+  it('caps rapid gig creation (429 past the window limit)', async () => {
+    const u = await register()
+    let limited = false
+    for (let i = 0; i < 17; i++) {
+      const r = await call(
+        '/gigs',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            task_type: `t${i}`,
+            neighborhood: 'n',
+            cash_payout: 1,
+            est_hours: 1,
+            lat: 34.72,
+            lng: -76.66,
+            description: 'd',
+          }),
+        },
+        u.token,
+      )
+      if (r.status === 429) limited = true
+    }
+    expect(limited).toBe(true)
+  })
+})

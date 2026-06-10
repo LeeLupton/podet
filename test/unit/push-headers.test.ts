@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { pushHeaders, topicFor } from '../../functions/lib/push'
+import { isAllowedPushEndpoint, pushHeaders, topicFor } from '../../functions/lib/push'
 
 describe('pushHeaders', () => {
   it('sets the protocol headers with a 28-day default TTL and normal urgency', () => {
@@ -47,5 +47,33 @@ describe('topicFor', () => {
 
   it('truncates anything longer than 32 chars', () => {
     expect(topicFor('x'.repeat(50))).toHaveLength(32)
+  })
+})
+
+describe('isAllowedPushEndpoint (SSRF guard)', () => {
+  it('accepts the real browser push services', () => {
+    for (const e of [
+      'https://fcm.googleapis.com/fcm/send/abc123',
+      'https://web.push.apple.com/QOXxlGU',
+      'https://updates.push.services.mozilla.com/wpush/v2/gAAAA',
+      'https://db5p.notify.windows.com/w/?token=abc',
+    ]) {
+      expect(isAllowedPushEndpoint(e)).toBe(true)
+    }
+  })
+
+  it('rejects arbitrary https hosts', () => {
+    expect(isAllowedPushEndpoint('https://attacker.example.com/hook')).toBe(false)
+    expect(isAllowedPushEndpoint('https://internal.service.local/admin')).toBe(false)
+  })
+
+  it('rejects lookalike hosts that merely contain a service name', () => {
+    expect(isAllowedPushEndpoint('https://fcm.googleapis.com.evil.io/x')).toBe(false)
+    expect(isAllowedPushEndpoint('https://notgoogleapis.com/x')).toBe(false)
+  })
+
+  it('rejects non-https and garbage', () => {
+    expect(isAllowedPushEndpoint('http://fcm.googleapis.com/x')).toBe(false)
+    expect(isAllowedPushEndpoint('not a url')).toBe(false)
   })
 })

@@ -244,7 +244,7 @@ describe('UI surface sweep (no 404/500 from any api.js route)', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              endpoint: 'https://p.example/e1',
+              endpoint: 'https://fcm.googleapis.com/fcm/send/sweep1',
               keys: { p256dh: 'k', auth: 'a' },
             }),
           },
@@ -257,7 +257,10 @@ describe('UI surface sweep (no 404/500 from any api.js route)', () => {
       (
         await call(
           '/push/subscribe',
-          { method: 'DELETE', body: JSON.stringify({ endpoint: 'https://p.example/e1' }) },
+          {
+            method: 'DELETE',
+            body: JSON.stringify({ endpoint: 'https://fcm.googleapis.com/fcm/send/sweep1' }),
+          },
           a.token,
         )
       ).status,

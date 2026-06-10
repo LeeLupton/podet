@@ -19,7 +19,7 @@ import { parseGigInput } from '../lib/gig'
 import { clampLimit, parseBefore } from '../lib/pagination'
 import { DUMMY_PASSWORD_HASH, hashPassword, verifyPassword } from '../lib/password'
 import { MAX_PHOTOS_PER_GIG, checkImageUpload, photoKey } from '../lib/photos'
-import { type PushDeliveryOptions, sendWebPush, topicFor } from '../lib/push'
+import { type PushDeliveryOptions, isAllowedPushEndpoint, sendWebPush, topicFor } from '../lib/push'
 import { rateLimitKey, windowStart } from '../lib/ratelimit'
 import { validateSlot } from '../lib/schedule'
 import { LIMITS, isValidRating, validateString } from '../lib/validate'
@@ -200,11 +200,20 @@ app.post('/register', async (c) => {
 
   const id = crypto.randomUUID()
   const password_hash = await hashPassword(password)
-  await c.env.DB.prepare(
-    'insert into users (id, email, password_hash, display_name) values (?, ?, ?, ?)',
-  )
-    .bind(id, email, password_hash, display_name)
-    .run()
+  try {
+    await c.env.DB.prepare(
+      'insert into users (id, email, password_hash, display_name) values (?, ?, ?, ?)',
+    )
+      .bind(id, email, password_hash, display_name)
+      .run()
+  } catch (e: any) {
+    // Two concurrent registrations can both pass the SELECT — the unique
+    // constraint is the real guard; surface it as the same 409.
+    if (String(e?.message ?? e).includes('UNIQUE')) {
+      return c.json({ error: 'email already registered' }, 409)
+    }
+    throw e
+  }
 
   const token = await issueSession(c, id)
   return c.json({ token, user: { id, email, display_name } }, 201)
@@ -494,6 +503,9 @@ app.get('/gigs/:id', async (c) => {
 
 // Create a gig — posted_by = session user.
 app.post('/gigs', async (c) => {
+  if (!(await rateLimit(c, 'gig-create', 15, 300))) {
+    return c.json({ error: 'too many gigs — slow down' }, 429)
+  }
   const userId = c.get('userId')
   let b: any
   try {
@@ -858,6 +870,9 @@ app.get('/gigs/:id/messages', async (c) => {
 })
 
 app.post('/gigs/:id/messages', async (c) => {
+  if (!(await rateLimit(c, 'message-send', 60, 300))) {
+    return c.json({ error: 'too many messages — slow down' }, 429)
+  }
   const userId = c.get('userId')
   const gig: any = await gigParties(c.env.DB, c.req.param('id'))
   if (!gig) return c.json({ error: 'not found' }, 404)
@@ -1018,6 +1033,9 @@ app.get('/posts', async (c) => {
 })
 
 app.post('/posts', async (c) => {
+  if (!(await rateLimit(c, 'post-create', 15, 300))) {
+    return c.json({ error: 'too many posts — slow down' }, 429)
+  }
   const userId = c.get('userId')
   let b: any
   try {
@@ -1117,6 +1135,9 @@ app.delete('/posts/:id', async (c) => {
 })
 
 app.post('/posts/:id/comments', async (c) => {
+  if (!(await rateLimit(c, 'comment-create', 30, 300))) {
+    return c.json({ error: 'too many comments — slow down' }, 429)
+  }
   const userId = c.get('userId')
   const postId = c.req.param('id')
   let b: any
@@ -1368,16 +1389,10 @@ app.post('/push/subscribe', async (c) => {
   if (typeof endpoint !== 'string' || !p256dh || !auth) {
     return c.json({ error: 'endpoint and keys required' }, 400)
   }
-  // Push service endpoints are always https; reject anything else so we never
-  // POST encrypted payloads to an arbitrary scheme/host of the client's choosing.
-  let endpointUrl: URL
-  try {
-    endpointUrl = new URL(endpoint)
-  } catch {
-    return c.json({ error: 'invalid endpoint' }, 400)
-  }
-  if (endpointUrl.protocol !== 'https:') {
-    return c.json({ error: 'endpoint must be https' }, 400)
+  // Only deliver to real browser push services — the server POSTs to this URL,
+  // so anything else is a server-side request forgery vector.
+  if (!isAllowedPushEndpoint(endpoint)) {
+    return c.json({ error: 'unrecognized push service endpoint' }, 400)
   }
   await c.env.DB.prepare(
     `insert into push_subscriptions (endpoint, user_id, p256dh, auth) values (?, ?, ?, ?)

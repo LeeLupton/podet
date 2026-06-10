@@ -164,6 +164,28 @@ export type PushDeliveryOptions = {
 const TOPIC_RE = /^[A-Za-z0-9_-]{1,32}$/
 const DEFAULT_TTL = 2419200 // 28 days
 
+// Browser push services we will deliver to. Subscriptions are client-supplied
+// URLs and the server POSTs to them — without this allowlist that is an SSRF
+// primitive (the API could be aimed at arbitrary third-party endpoints).
+const PUSH_HOST_SUFFIXES = [
+  '.googleapis.com', // Chrome/Edge/Samsung via FCM (fcm.googleapis.com)
+  '.push.apple.com', // Safari / iOS web push
+  '.push.services.mozilla.com', // Firefox autopush
+  '.notify.windows.com', // WNS
+]
+
+export function isAllowedPushEndpoint(endpoint: string): boolean {
+  let url: URL
+  try {
+    url = new URL(endpoint)
+  } catch {
+    return false
+  }
+  if (url.protocol !== 'https:') return false
+  const host = url.hostname.toLowerCase()
+  return PUSH_HOST_SUFFIXES.some((sfx) => host.endsWith(sfx) || host === sfx.slice(1))
+}
+
 // Collapse key for events about one entity: a UUID minus hyphens is 32 hex
 // chars — exactly the RFC 8030 Topic limit. Newer updates with the same topic
 // replace queued older ones instead of stacking up on the device.
