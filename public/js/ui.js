@@ -49,9 +49,12 @@ export function toast(message, kind = 'info') {
 }
 
 // A bottom sheet / modal. Returns a close() fn. Tapping the backdrop closes it.
-export function openSheet(contentNode) {
+// Sheets anchor to the bottom on phones (thumb zone); pass { center: true } for
+// content that should float centered instead (e.g. the photo viewer). On wide
+// screens CSS centers every sheet regardless.
+export function openSheet(contentNode, { center = false } = {}) {
   const sheet = h('div', { class: 'sheet' }, contentNode)
-  const backdrop = h('div', { class: 'backdrop' }, sheet)
+  const backdrop = h('div', { class: center ? 'backdrop backdrop-center' : 'backdrop' }, sheet)
   const close = () => backdrop.remove()
   backdrop.addEventListener('click', (e) => {
     if (e.target === backdrop) close()
@@ -72,6 +75,7 @@ export function openImage(url) {
       { class: 'sheet-body' },
       h('img', { class: 'photo-full', src: url, alt: 'work photo' }),
     ),
+    { center: true },
   )
 }
 
