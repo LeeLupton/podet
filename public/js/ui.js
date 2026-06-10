@@ -52,15 +52,63 @@ export function toast(message, kind = 'info') {
 // Sheets anchor to the bottom on phones (thumb zone); pass { center: true } for
 // content that should float centered instead (e.g. the photo viewer). On wide
 // screens CSS centers every sheet regardless.
-export function openSheet(contentNode, { center = false } = {}) {
+export function openSheet(contentNode, { center = false, onClose = null } = {}) {
   const sheet = h('div', { class: 'sheet' }, contentNode)
   const backdrop = h('div', { class: center ? 'backdrop backdrop-center' : 'backdrop' }, sheet)
-  const close = () => backdrop.remove()
+  const close = () => {
+    backdrop.remove()
+    if (onClose) onClose()
+  }
   backdrop.addEventListener('click', (e) => {
     if (e.target === backdrop) close()
   })
   document.body.append(backdrop)
   return close
+}
+
+// A styled replacement for window.prompt(): title + textarea + Cancel/submit in a
+// sheet. Resolves with the trimmed text, or null if cancelled/dismissed.
+export function promptSheet(
+  title,
+  { placeholder = '', maxlength = '500', submitLabel = 'Send' } = {},
+) {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      close()
+      resolve(value)
+    }
+    const text = h('textarea', {
+      class: 'input',
+      rows: '3',
+      maxlength,
+      placeholder,
+      required: true,
+    })
+    const form = h(
+      'form',
+      {
+        class: 'sheet-body form',
+        onSubmit: (e) => {
+          e.preventDefault()
+          const value = text.value.trim()
+          if (value) finish(value)
+        },
+      },
+      h('h2', { class: 'screen-title' }, title),
+      text,
+      h(
+        'div',
+        { class: 'row' },
+        h('button', { type: 'button', class: 'btn-ghost', onClick: () => finish(null) }, 'Cancel'),
+        h('button', { type: 'submit', class: 'btn-primary' }, submitLabel),
+      ),
+    )
+    const close = openSheet(form, { onClose: () => finish(null) })
+    text.focus()
+  })
 }
 
 export function spinner(label = 'Loading…') {

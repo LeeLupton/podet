@@ -5,7 +5,7 @@ import { ApiError, api } from './api.js'
 import { getUser } from './auth.js'
 import { requestGeolocation } from './location.js'
 import { nameLink } from './profile.js'
-import { clear, emptyState, errorState, fmtDate, h, spinner, toast } from './ui.js'
+import { clear, emptyState, errorState, fmtDate, h, promptSheet, spinner, toast } from './ui.js'
 
 // main.js wires this so "Turn into a gig" can prefill the Post screen and switch tabs.
 let onTurnIntoGig = null
@@ -28,9 +28,15 @@ function composer() {
   const body = h('textarea', {
     class: 'input',
     rows: '3',
+    maxlength: '1000',
     placeholder: 'Share an observation or a “wouldn’t it look better if…”',
   })
-  const area = h('input', { class: 'input', type: 'text', placeholder: 'Area label (optional)' })
+  const area = h('input', {
+    class: 'input',
+    type: 'text',
+    maxlength: '120',
+    placeholder: 'Area label (optional)',
+  })
   const pin = { lat: null, lng: null }
   const pinBtn = h(
     'button',
@@ -224,10 +230,13 @@ async function renderExpanded(p, wrap, reloadList) {
     {
       class: 'link-btn danger',
       onClick: async () => {
-        const reason = prompt('Why are you reporting this post?')
-        if (!reason || !reason.trim()) return
+        const reason = await promptSheet('Report this post', {
+          placeholder: 'What’s wrong with it? An admin will review this.',
+          submitLabel: 'Report',
+        })
+        if (!reason) return
         try {
-          await api.report('post', p.id, reason.trim())
+          await api.report('post', p.id, reason)
           toast('Reported — an admin will review it')
         } catch (err) {
           toast(err instanceof ApiError ? err.message : 'Could not report', 'error')
@@ -273,7 +282,12 @@ async function renderExpanded(p, wrap, reloadList) {
   for (const cm of full.comments || [])
     commentList.append(commentRow(cm, me, reloadList, () => refresh()))
 
-  const commentInput = h('input', { class: 'input', type: 'text', placeholder: 'Add a comment…' })
+  const commentInput = h('input', {
+    class: 'input',
+    type: 'text',
+    maxlength: '1000',
+    placeholder: 'Add a comment…',
+  })
   const commentForm = h(
     'form',
     {
@@ -340,9 +354,14 @@ function commentRow(cm, me, reloadList, refresh) {
 
 // Inline editor for your own post (body + optional area label).
 function openEditPost(full, wrap, reloadList, refresh) {
-  const body = h('textarea', { class: 'input', rows: '3' })
+  const body = h('textarea', { class: 'input', rows: '3', maxlength: '1000' })
   body.value = full.body
-  const area = h('input', { class: 'input', type: 'text', placeholder: 'Area label (optional)' })
+  const area = h('input', {
+    class: 'input',
+    type: 'text',
+    maxlength: '120',
+    placeholder: 'Area label (optional)',
+  })
   if (full.area_label) area.value = full.area_label
   const save = h('button', { class: 'btn-primary', type: 'submit' }, 'Save changes')
   const cancel = h(

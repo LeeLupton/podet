@@ -103,6 +103,13 @@ body {
   outline: 2px solid var(--accent);
   outline-offset: 0;
 }
+/* Flag out-of-range/invalid values once the user has interacted with the field. */
+.input:user-invalid {
+  border-color: var(--warning);
+}
+.input:user-invalid:focus {
+  outline-color: var(--warning);
+}
 textarea.input {
   resize: vertical;
 }

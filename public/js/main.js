@@ -55,6 +55,7 @@ function renderGate(gate) {
     type: 'email',
     placeholder: 'you@example.com',
     autocomplete: 'email',
+    maxlength: '254',
     required: true,
   })
   const password = h('input', {
@@ -62,6 +63,8 @@ function renderGate(gate) {
     type: 'password',
     placeholder: 'Password (8+ chars)',
     autocomplete: 'current-password',
+    minlength: '8',
+    maxlength: '200',
     required: true,
   })
   const name = h('input', {
@@ -69,6 +72,7 @@ function renderGate(gate) {
     type: 'text',
     placeholder: 'Display name',
     autocomplete: 'name',
+    maxlength: '60',
   })
   const nameWrap = h('div', { class: 'hidden' }, name)
   const submit = h('button', { class: 'btn-primary', type: 'submit' }, 'Log in')

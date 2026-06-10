@@ -409,6 +409,7 @@ function changePasswordBlock() {
     type: 'password',
     placeholder: 'Current password',
     autocomplete: 'current-password',
+    maxlength: '200',
     required: true,
   })
   const next = h('input', {
@@ -416,6 +417,8 @@ function changePasswordBlock() {
     type: 'password',
     placeholder: 'New password (8+ chars)',
     autocomplete: 'new-password',
+    minlength: '8',
+    maxlength: '200',
     required: true,
   })
   const save = h('button', { class: 'btn-ghost', type: 'submit' }, 'Update password')
@@ -520,7 +523,12 @@ async function enableNotifications(btn) {
 function messagesThread(g) {
   const wrap = h('div', { class: 'msg-wrap' })
   const list = h('div', { class: 'comments hidden' })
-  const input = h('input', { class: 'input', type: 'text', placeholder: 'Message…' })
+  const input = h('input', {
+    class: 'input',
+    type: 'text',
+    maxlength: '1000',
+    placeholder: 'Message…',
+  })
   const form = h(
     'form',
     {
@@ -587,6 +595,7 @@ function businessBlock(profile) {
   const name = h('input', {
     class: 'input',
     type: 'text',
+    maxlength: '80',
     placeholder: 'Business name (optional)',
   })
   if (profile.business_name) name.value = profile.business_name
@@ -630,6 +639,7 @@ function supportBlock() {
   const text = h('textarea', {
     class: 'input',
     rows: '2',
+    maxlength: '500',
     placeholder: 'Describe the problem — an admin will see this.',
   })
   const send = h('button', { class: 'btn-ghost', type: 'submit' }, 'Send to support')
@@ -886,6 +896,8 @@ function dangerBlock(root) {
     type: 'password',
     placeholder: 'Confirm password to delete',
     autocomplete: 'current-password',
+    maxlength: '200',
+    required: true,
   })
   const form = h(
     'form',
