@@ -5,7 +5,7 @@ beforeAll(applySchema)
 beforeEach(clearRateLimits)
 
 const sub = {
-  endpoint: 'https://push.example.com/abc',
+  endpoint: 'https://fcm.googleapis.com/fcm/send/abc',
   keys: { p256dh: 'BPEXAMPLEp256dh', auth: 'authsecret' },
 }
 
@@ -41,7 +41,20 @@ describe('POST /push/subscribe', () => {
       '/push/subscribe',
       {
         method: 'POST',
-        body: JSON.stringify({ ...sub, endpoint: 'http://push.example.com/abc' }),
+        body: JSON.stringify({ ...sub, endpoint: 'http://fcm.googleapis.com/fcm/send/abc' }),
+      },
+      u.token,
+    )
+    expect(r.status).toBe(400)
+  })
+
+  it('rejects an endpoint that is not a known push service (SSRF guard, 400)', async () => {
+    const u = await register()
+    const r = await call(
+      '/push/subscribe',
+      {
+        method: 'POST',
+        body: JSON.stringify({ ...sub, endpoint: 'https://attacker.example.com/hook' }),
       },
       u.token,
     )

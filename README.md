@@ -185,6 +185,19 @@ D1 does not pause, so there is no keep-alive to run.
   request; an admin approves it and a ✔ badge appears next to your name everywhere.
   Changing the name clears the badge until re-verified.
 
+- **Session revocation** — changing your password (or closing your account) invalidates every
+  existing session token everywhere via a per-user `session_epoch` in the JWT.
+- **Gig lifecycle completeness** — the hirer can remove a no-show worker (reopens the gig); the
+  worker can mark a job "done" (the hirer is notified to review & pay); both clear on release.
+- **Scheduling, finished** — the gig window is editable, the claim form enforces it, and gigs
+  whose window has passed drop out of Nearby (they're unclaimable).
+- **Blocking** — block a user from any profile; their gigs/posts disappear from your feeds and
+  neither of you can claim the other's gigs. Manage the list in the Me tab.
+- **Account deletion** — close your account (password-confirmed); your profile is anonymized and
+  you're logged out everywhere, while reviews/gigs stay on the ledger for integrity.
+- **Money & ops** — the Me tab shows earned vs paid-out totals; admins get a stats card;
+  `npm run db:backup` exports the remote D1 to a SQL file (D1 Time Travel also restores ~30 days).
+
 ### Deferred by design
 - **Email password-reset / verification** — there is currently no free all-Cloudflare way to
   send email (MailChannels' free Workers route was discontinued). Adding it means a

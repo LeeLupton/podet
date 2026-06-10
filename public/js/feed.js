@@ -145,12 +145,12 @@ function showLocationForm(message) {
           renderFeed(document.getElementById('view-nearby'))
         } catch (err) {
           toast(err.message, 'error')
-          useGps.textContent = '📍 Use my location'
+          useGps.textContent = 'Use my location'
           useGps.disabled = false
         }
       },
     },
-    '📍 Use my location',
+    'Use my location',
   )
 
   const form = h(
@@ -232,7 +232,7 @@ function openGig(g) {
     claimBtn.textContent = 'Claiming…'
     try {
       await api.claimGig(g.id, slot)
-      claimBtn.textContent = 'Claimed ✓'
+      claimBtn.textContent = 'Claimed'
       claimBtn.classList.add('claimed')
       toast('Gig claimed — it’s yours')
       load() // re-query: claimed gig leaves the Nearby list
@@ -311,7 +311,7 @@ function mapLink(g) {
       target: '_blank',
       rel: 'noopener',
     },
-    '📍 View map pin',
+    'Open map',
   )
 }
 

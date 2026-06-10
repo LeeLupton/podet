@@ -136,6 +136,9 @@ setOnEditGig((g) => {
     description: g.description,
     lat: g.lat,
     lng: g.lng,
+    window_start: g.window_start,
+    window_end: g.window_end,
+    notice_hours: g.notice_hours,
   })
   navigate('post')
 })

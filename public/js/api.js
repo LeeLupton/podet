@@ -75,6 +75,8 @@ export const api = {
   claimGig: (id, scheduled_at) =>
     request(`/gigs/${id}/claim`, { method: 'POST', body: { scheduled_at: scheduled_at ?? null } }),
   abandonGig: (id) => request(`/gigs/${id}/abandon`, { method: 'POST' }),
+  unclaimGig: (id) => request(`/gigs/${id}/unclaim`, { method: 'POST' }),
+  markGigDone: (id) => request(`/gigs/${id}/done`, { method: 'POST' }),
   uploadGigPhoto: (gigId, file) => request(`/gigs/${gigId}/photos`, { method: 'POST', raw: file }),
   deleteGigPhoto: (gigId, photoId) =>
     request(`/gigs/${gigId}/photos/${photoId}`, { method: 'DELETE' }),
@@ -121,6 +123,17 @@ export const api = {
   adminDeletePost: (id) => request(`/admin/posts/${id}`, { method: 'DELETE' }),
   adminDeleteComment: (id) => request(`/admin/comments/${id}`, { method: 'DELETE' }),
   adminDeleteGig: (id) => request(`/admin/gigs/${id}`, { method: 'DELETE' }),
+
+  // Blocking
+  block: (userId) => request(`/users/${userId}/block`, { method: 'POST' }),
+  unblock: (userId) => request(`/users/${userId}/block`, { method: 'DELETE' }),
+  blocks: () => request('/me/blocks'),
+
+  // Account
+  deleteAccount: (password) => request('/me/delete', { method: 'POST', body: { password } }),
+
+  // Admin stats
+  adminStats: () => request('/admin/stats'),
 
   // Web push
   pushKey: () => request('/push/key'),
