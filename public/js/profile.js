@@ -53,13 +53,16 @@ async function load(root) {
     const profile = { ...pub, ...self, average_rating: pub.average_rating }
     clear(root)
     root.append(headerBlock(me, profile))
+    root.append(moneyBlock(mine))
     root.append(notificationsBlock())
     root.append(businessBlock(profile))
     root.append(changePasswordBlock())
     root.append(gigsBlock(mine, root))
     root.append(reviewsBlock(reviews, me.id))
     root.append(supportBlock())
+    root.append(blocksBlock())
     if (profile.is_admin) root.append(adminBlock(root))
+    root.append(dangerBlock(root))
   } catch (err) {
     clear(root)
     root.append(
@@ -174,8 +177,33 @@ function postedGigCard(g, root) {
       ),
     )
   } else if (g.status === 'CLAIMED') {
-    // Your own CLAIMED gig → inline inspect + rate panel.
+    if (g.done_at) {
+      card.append(h('div', { class: 'gig-meta sched' }, '✓ Worker marked it done — review & pay'))
+    }
+    // Inline inspect + rate panel, plus a way to drop a no-show worker.
     card.append(renderRatePanel(g, () => renderProfile(root)))
+    card.append(
+      h(
+        'div',
+        { class: 'post-actions' },
+        h(
+          'button',
+          {
+            class: 'btn-ghost danger',
+            onClick: async () => {
+              try {
+                await api.unclaimGig(g.id)
+                toast('Worker removed — the gig is open again')
+                renderProfile(root)
+              } catch (err) {
+                toast(err instanceof ApiError ? err.message : 'Could not remove worker', 'error')
+              }
+            },
+          },
+          'Remove worker',
+        ),
+      ),
+    )
   }
   return card
 }
@@ -210,28 +238,48 @@ function claimedGigCard(g, root) {
   )
   card.append(messagesThread(g))
   if (g.status === 'CLAIMED') {
-    card.append(
-      h(
-        'div',
-        { class: 'post-actions' },
+    const actions = h('div', { class: 'post-actions' })
+    if (g.done_at) {
+      actions.append(h('span', { class: 'gig-meta sched' }, '✓ Marked done — waiting on the hirer'))
+    } else {
+      actions.append(
         h(
           'button',
           {
-            class: 'btn-ghost danger',
+            class: 'btn-ghost',
             onClick: async () => {
               try {
-                await api.abandonGig(g.id)
-                toast('Claim released — the gig is available again')
+                await api.markGigDone(g.id)
+                toast('Marked done — the hirer was notified')
                 renderProfile(root)
               } catch (err) {
-                toast(err instanceof ApiError ? err.message : 'Could not release claim', 'error')
+                toast(err instanceof ApiError ? err.message : 'Could not mark done', 'error')
               }
             },
           },
-          'Release claim',
+          "✓ I'm done",
         ),
+      )
+    }
+    actions.append(
+      h(
+        'button',
+        {
+          class: 'btn-ghost danger',
+          onClick: async () => {
+            try {
+              await api.abandonGig(g.id)
+              toast('Claim released — the gig is available again')
+              renderProfile(root)
+            } catch (err) {
+              toast(err instanceof ApiError ? err.message : 'Could not release claim', 'error')
+            }
+          },
+        },
+        'Release claim',
       ),
     )
+    card.append(actions)
   }
   return card
 }
@@ -331,6 +379,12 @@ export async function openUserProfile(userId) {
           )
         : null,
       statsRow(avg, profile),
+      h(
+        'div',
+        { class: 'gig-meta' },
+        `As a hirer: ${profile.gigs_posted} posted · ${profile.gigs_paid} paid out`,
+      ),
+      blockToggle(userId, profile.i_blocked),
       h('h3', { class: 'subhead' }, 'Reviews'),
     )
     if (!reviews.length) {
@@ -509,6 +563,7 @@ function messagesThread(g) {
     }
   }
 
+  const label = g.message_count > 0 ? `💬 Messages (${g.message_count})` : '💬 Messages'
   const toggle = h(
     'button',
     {
@@ -516,11 +571,11 @@ function messagesThread(g) {
       onClick: async () => {
         const open = list.classList.toggle('hidden')
         form.classList.toggle('hidden', open)
-        toggle.textContent = open ? '💬 Messages' : 'Hide messages'
+        toggle.textContent = open ? label : 'Hide messages'
         if (!open) await loadThread()
       },
     },
-    '💬 Messages',
+    label,
   )
   wrap.append(toggle, list, form)
   return wrap
@@ -737,4 +792,135 @@ function adminBlock(root) {
 
   loadQueue()
   return wrap
+}
+
+/* --- Money summary --- */
+
+function moneyBlock(mine) {
+  const earned = (mine.claimed || [])
+    .filter((g) => g.status === 'COMPLETED')
+    .reduce((n, g) => n + g.cash_payout, 0)
+  const paid = (mine.posted || [])
+    .filter((g) => g.status === 'COMPLETED')
+    .reduce((n, g) => n + g.cash_payout, 0)
+  return h(
+    'div',
+    { class: 'card me-stats' },
+    stat(money(earned), 'earned'),
+    stat(money(paid), 'paid out'),
+  )
+}
+
+/* --- Block toggle (used in the profile sheet) --- */
+
+function blockToggle(userId, blocked) {
+  const btn = h('button', { class: 'btn-ghost danger' }, blocked ? 'Unblock' : 'Block')
+  let isBlocked = !!blocked
+  btn.addEventListener('click', async () => {
+    btn.disabled = true
+    try {
+      if (isBlocked) await api.unblock(userId)
+      else await api.block(userId)
+      isBlocked = !isBlocked
+      btn.textContent = isBlocked ? 'Unblock' : 'Block'
+      toast(isBlocked ? 'Blocked' : 'Unblocked')
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Could not update', 'error')
+    } finally {
+      btn.disabled = false
+    }
+  })
+  return btn
+}
+
+/* --- Blocked-users list (Me) --- */
+
+function blocksBlock() {
+  const wrap = h('div', { class: 'me-section' })
+  const list = h('div', { class: 'list' })
+  async function load() {
+    try {
+      const blocked = await api.blocks()
+      if (!blocked.length) {
+        wrap.classList.add('hidden')
+        return
+      }
+      wrap.classList.remove('hidden')
+      clear(list)
+      wrap.prepend(h('h2', { class: 'section-title' }, 'Blocked'))
+      for (const u of blocked) {
+        list.append(
+          h(
+            'div',
+            { class: 'card gig-row' },
+            h('div', { class: 'gig-row-top' }, h('span', {}, u.display_name || 'Someone')),
+            h(
+              'button',
+              {
+                class: 'btn-ghost',
+                onClick: async () => {
+                  await api.unblock(u.id).catch(() => toast('Failed', 'error'))
+                  load()
+                },
+              },
+              'Unblock',
+            ),
+          ),
+        )
+      }
+      wrap.append(list)
+    } catch {
+      wrap.classList.add('hidden')
+    }
+  }
+  wrap.classList.add('hidden')
+  load()
+  return wrap
+}
+
+/* --- Danger zone: close account --- */
+
+function dangerBlock(root) {
+  const pw = h('input', {
+    class: 'input',
+    type: 'password',
+    placeholder: 'Confirm password to delete',
+    autocomplete: 'current-password',
+  })
+  const form = h(
+    'form',
+    {
+      class: 'form hidden',
+      onSubmit: async (e) => {
+        e.preventDefault()
+        if (
+          !confirm(
+            'Permanently close your account? Reviews stay on the ledger but your profile is removed and you are logged out.',
+          )
+        ) {
+          return
+        }
+        try {
+          await api.deleteAccount(pw.value)
+          toast('Account closed')
+          if (onLoggedOut) onLoggedOut()
+        } catch (err) {
+          toast(err instanceof ApiError ? err.message : 'Could not close account', 'error')
+        }
+      },
+    },
+    pw,
+    h('button', { class: 'btn-ghost danger', type: 'submit' }, 'Permanently delete account'),
+  )
+  const toggle = h(
+    'button',
+    {
+      class: 'link-btn danger',
+      onClick: () => {
+        form.classList.toggle('hidden')
+      },
+    },
+    'Close account',
+  )
+  return h('div', { class: 'card form me-section' }, toggle, form)
 }

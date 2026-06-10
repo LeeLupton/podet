@@ -71,9 +71,11 @@ async function rateLimit(
 
 // Sessions — a JWT signed with env.SESSION_SECRET, delivered as an HttpOnly +
 // Secure + SameSite cookie (and returned in the body for Bearer clients).
-async function issueSession(c: any, userId: string): Promise<string> {
+// The token carries the user's session_epoch; bumping it (password change,
+// account close) invalidates every previously-issued token.
+async function issueSession(c: any, userId: string, epoch = 0): Promise<string> {
   const exp = Math.floor(Date.now() / 1000) + SESSION_TTL
-  const token = await sign({ sub: userId, exp }, c.env.SESSION_SECRET, 'HS256')
+  const token = await sign({ sub: userId, epoch, exp }, c.env.SESSION_SECRET, 'HS256')
   setCookie(c, 'session', token, {
     httpOnly: true,
     secure: true,
@@ -149,12 +151,21 @@ async function auth(c: any, next: any) {
     if (header?.startsWith('Bearer ')) token = header.slice(7)
   }
   if (!token) return c.json({ error: 'unauthenticated' }, 401)
+  let payload: any
   try {
-    const payload = await verify(token, c.env.SESSION_SECRET, 'HS256')
-    c.set('userId', payload.sub as string)
+    payload = await verify(token, c.env.SESSION_SECRET, 'HS256')
   } catch {
     return c.json({ error: 'invalid session' }, 401)
   }
+  // Reject tokens whose epoch is stale or whose account is gone — this is how a
+  // password change / account close logs out every existing session.
+  const u: any = await c.env.DB.prepare('select session_epoch, deleted from users where id = ?')
+    .bind(payload.sub)
+    .first()
+  if (!u || u.deleted || (payload.epoch ?? 0) !== u.session_epoch) {
+    return c.json({ error: 'session expired' }, 401)
+  }
+  c.set('userId', payload.sub as string)
   await next()
 }
 
@@ -215,16 +226,16 @@ app.post('/login', async (c) => {
   if (!email || !password) return c.json({ error: 'email and password required' }, 400)
 
   const user: any = await c.env.DB.prepare(
-    'select id, email, password_hash, display_name from users where email = ?',
+    'select id, email, password_hash, display_name, session_epoch, deleted from users where email = ?',
   )
     .bind(email)
     .first()
   // Always run the PBKDF2 verify (against a dummy hash when the email is unknown)
   // so response time doesn't reveal whether an account exists.
   const ok = await verifyPassword(password, user ? user.password_hash : DUMMY_PASSWORD_HASH)
-  if (!user || !ok) return c.json({ error: 'invalid credentials' }, 401)
+  if (!user || user.deleted || !ok) return c.json({ error: 'invalid credentials' }, 401)
 
-  const token = await issueSession(c, user.id)
+  const token = await issueSession(c, user.id, user.session_epoch)
   return c.json({
     token,
     user: { id: user.id, email: user.email, display_name: user.display_name },
@@ -276,6 +287,37 @@ app.put('/me/business', async (c) => {
   return c.json({ ok: true, business_name: nameCheck.value, verified: 0 })
 })
 
+// Close account — password-confirmed. Anonymizes the row and bumps session_epoch
+// (logs out everywhere) but KEEPS reviews/gigs so the reputation ledger stays
+// intact. Deletes push subscriptions. Auth middleware blocks deleted accounts.
+app.post('/me/delete', async (c) => {
+  const userId = c.get('userId')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const password = String(b.password ?? '')
+  const user: any = await c.env.DB.prepare('select password_hash from users where id = ?')
+    .bind(userId)
+    .first()
+  if (!user || !(await verifyPassword(password, user.password_hash))) {
+    return c.json({ error: 'password is incorrect' }, 403)
+  }
+  // Scramble PII; keep the row so foreign keys (reviews, gigs) stay valid.
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `update users set deleted = 1, session_epoch = session_epoch + 1,
+                email = ?, display_name = 'Deleted user', business_name = null,
+                verified = 0, password_hash = ? where id = ?`,
+    ).bind(`deleted+${userId}@invalid`, DUMMY_PASSWORD_HASH, userId),
+    c.env.DB.prepare('delete from push_subscriptions where user_id = ?').bind(userId),
+  ])
+  deleteCookie(c, 'session', { path: '/' })
+  return c.json({ ok: true })
+})
+
 // Change password — requires the current password; rate-limited.
 app.post('/me/password', async (c) => {
   if (!(await rateLimit(c, 'chpass', 5, 60))) {
@@ -301,9 +343,14 @@ app.post('/me/password', async (c) => {
     return c.json({ error: 'current password is incorrect' }, 403)
   }
   const password_hash = await hashPassword(next)
-  await c.env.DB.prepare('update users set password_hash = ? where id = ?')
+  // Bump session_epoch → every existing token (incl. a thief's) becomes invalid…
+  const row: any = await c.env.DB.prepare(
+    'update users set password_hash = ?, session_epoch = session_epoch + 1 where id = ? returning session_epoch',
+  )
     .bind(password_hash, userId)
-    .run()
+    .first()
+  // …then re-issue a fresh session for THIS device so the user stays logged in here.
+  await issueSession(c, userId, row.session_epoch)
   return c.json({ ok: true })
 })
 
@@ -324,17 +371,22 @@ app.get('/gigs/near', async (c) => {
   const rows = await c.env.DB.prepare(
     `select g.id, g.status, g.task_type, g.neighborhood, g.cash_payout, g.est_hours,
             g.lat, g.lng, g.description, g.posted_by, g.from_post_id, g.created_at,
+            g.window_start, g.window_end, g.notice_hours,
             u.display_name as poster_name, u.verified as poster_verified
        from gigs g
        join users u on u.id = g.posted_by
       where g.status = 'AVAILABLE'
         and g.lat between ? and ?
-        and g.lng between ? and ?`,
+        and g.lng between ? and ?
+        -- hide gigs whose scheduling window has already closed (unclaimable)
+        and (g.window_end is null or g.window_end > ?)`,
   )
-    .bind(lat - latDelta, lat + latDelta, lng - lngDelta, lng + lngDelta)
+    .bind(lat - latDelta, lat + latDelta, lng - lngDelta, lng + lngDelta, new Date().toISOString())
     .all()
 
+  const blocked = await blockedSet(c.env.DB, c.get('userId'))
   const near = (rows.results as any[])
+    .filter((g) => !blocked.has(g.posted_by))
     .map((g) => ({ ...g, distance_mi: haversineMiles(lat, lng, g.lat, g.lng) }))
     .filter((g) => g.distance_mi <= r)
     .sort((a, b) => a.distance_mi - b.distance_mi)
@@ -347,14 +399,16 @@ app.get('/gigs/near', async (c) => {
 app.get('/gigs/mine', async (c) => {
   const userId = c.get('userId')
   const posted = await c.env.DB.prepare(
-    `select g.*, wp.display_name as worker_name
+    `select g.*, wp.display_name as worker_name,
+            (select count(*) from gig_messages m where m.gig_id = g.id) as message_count
        from gigs g left join users wp on wp.id = g.claimed_by
       where g.posted_by = ? order by g.created_at desc`,
   )
     .bind(userId)
     .all()
   const claimed = await c.env.DB.prepare(
-    `select g.*, hp.display_name as poster_name
+    `select g.*, hp.display_name as poster_name,
+            (select count(*) from gig_messages m where m.gig_id = g.id) as message_count
        from gigs g join users hp on hp.id = g.posted_by
       where g.claimed_by = ? order by g.created_at desc`,
   )
@@ -484,11 +538,14 @@ app.post('/gigs/:id/claim', async (c) => {
   }
 
   const pre: any = await c.env.DB.prepare(
-    'select window_start, window_end, notice_hours from gigs where id = ?',
+    'select posted_by, window_start, window_end, notice_hours from gigs where id = ?',
   )
     .bind(id)
     .first()
   if (!pre) return c.json({ error: 'not found' }, 404)
+  // Either party having blocked the other prevents the claim.
+  const blocked = await blockedSet(c.env.DB, userId)
+  if (blocked.has(pre.posted_by)) return c.json({ error: 'gig is unavailable or your own' }, 409)
   const slot = validateSlot(slotInput, pre.window_start, pre.window_end, pre.notice_hours ?? 0)
   if (!slot.ok) return c.json({ error: slot.reason }, 400)
 
@@ -608,8 +665,11 @@ app.put('/gigs/:id', async (c) => {
   if (!isValidLatLng(lat, lng)) {
     return c.json({ error: 'valid lat and lng required' }, 400)
   }
+  const win = validateWindow(b.window_start, b.window_end, b.notice_hours)
+  if (!win.ok) return c.json({ error: win.reason }, 400)
   const res = await c.env.DB.prepare(
-    `update gigs set task_type = ?, neighborhood = ?, description = ?, cash_payout = ?, est_hours = ?, lat = ?, lng = ?
+    `update gigs set task_type = ?, neighborhood = ?, description = ?, cash_payout = ?, est_hours = ?, lat = ?, lng = ?,
+            window_start = ?, window_end = ?, notice_hours = ?
       where id = ? and posted_by = ? and status = 'AVAILABLE'`,
   )
     .bind(
@@ -620,6 +680,9 @@ app.put('/gigs/:id', async (c) => {
       est_hours,
       lat,
       lng,
+      win.window_start,
+      win.window_end,
+      win.notice_hours,
       id,
       userId,
     )
@@ -651,7 +714,7 @@ app.post('/gigs/:id/abandon', async (c) => {
   const userId = c.get('userId')
   const id = c.req.param('id')
   const res = await c.env.DB.prepare(
-    `update gigs set status = 'AVAILABLE', claimed_by = null, scheduled_at = null
+    `update gigs set status = 'AVAILABLE', claimed_by = null, scheduled_at = null, done_at = null
       where id = ? and status = 'CLAIMED' and claimed_by = ?`,
   )
     .bind(id, userId)
@@ -672,6 +735,76 @@ app.post('/gigs/:id/abandon', async (c) => {
         {
           title: 'Worker released your gig',
           body: `${g.task_type} — it's available again`,
+          url: '/',
+        },
+        { topic: topicFor(id), urgency: 'high' },
+      ),
+    )
+  }
+  return c.json({ ok: true })
+})
+
+// Unclaim — the HIRER removes a no-show worker (CLAIMED→AVAILABLE). Mirror of
+// abandon but keyed on posted_by; notifies the dropped worker.
+app.post('/gigs/:id/unclaim', async (c) => {
+  const userId = c.get('userId')
+  const id = c.req.param('id')
+  const before: any = await c.env.DB.prepare('select claimed_by, task_type from gigs where id = ?')
+    .bind(id)
+    .first()
+  const res = await c.env.DB.prepare(
+    `update gigs set status = 'AVAILABLE', claimed_by = null, scheduled_at = null, done_at = null
+      where id = ? and status = 'CLAIMED' and posted_by = ?`,
+  )
+    .bind(id, userId)
+    .run()
+  if (res.meta.changes !== 1) {
+    return c.json({ error: 'not your claimed gig' }, 403)
+  }
+  if (before?.claimed_by) {
+    fireAndForget(
+      c,
+      notifyUser(
+        c,
+        before.claimed_by,
+        {
+          title: 'A gig was unassigned',
+          body: `${before.task_type} — the hirer reopened it`,
+          url: '/',
+        },
+        { topic: topicFor(id), urgency: 'high' },
+      ),
+    )
+  }
+  return c.json({ ok: true })
+})
+
+// Mark done — the WORKER signals the work is finished; the hirer then reviews+pays.
+// Advisory only (sets done_at); completion still requires the hirer.
+app.post('/gigs/:id/done', async (c) => {
+  const userId = c.get('userId')
+  const id = c.req.param('id')
+  const res = await c.env.DB.prepare(
+    `update gigs set done_at = datetime('now')
+      where id = ? and status = 'CLAIMED' and claimed_by = ?`,
+  )
+    .bind(id, userId)
+    .run()
+  if (res.meta.changes !== 1) {
+    return c.json({ error: 'not your claimed gig' }, 403)
+  }
+  const g: any = await c.env.DB.prepare('select posted_by, task_type from gigs where id = ?')
+    .bind(id)
+    .first()
+  if (g) {
+    fireAndForget(
+      c,
+      notifyUser(
+        c,
+        g.posted_by,
+        {
+          title: 'Work marked done',
+          body: `${g.task_type} — review & pay`,
           url: '/',
         },
         { topic: topicFor(id), urgency: 'high' },
@@ -860,7 +993,8 @@ app.get('/posts', async (c) => {
   )
     .bind(userId, before, before, limit)
     .all()
-  return c.json(rows.results)
+  const blocked = await blockedSet(c.env.DB, userId)
+  return c.json((rows.results as any[]).filter((p) => !blocked.has(p.author_id)))
 })
 
 app.post('/posts', async (c) => {
@@ -1057,14 +1191,30 @@ app.delete('/posts/:id/interest', async (c) => {
 
 // Public columns only — never email or password_hash.
 app.get('/users/:id', async (c) => {
+  const targetId = c.req.param('id')
   const user: any = await c.env.DB.prepare(
     `select id, display_name, total_gigs, rating_sum, rating_count, business_name, verified, created_at from users where id = ?`,
   )
-    .bind(c.req.param('id'))
+    .bind(targetId)
     .first()
   if (!user) return c.json({ error: 'not found' }, 404)
   const average =
     user.rating_count > 0 ? Number((user.rating_sum / user.rating_count).toFixed(2)) : null
+  // Hirer-side accountability: how many gigs they've posted and paid out, so a
+  // worker can judge a hirer before claiming (total_gigs is worker-side only).
+  const hirer: any = await c.env.DB.prepare(
+    `select count(*) as posted,
+            sum(case when status = 'COMPLETED' then 1 else 0 end) as paid
+       from gigs where posted_by = ?`,
+  )
+    .bind(targetId)
+    .first()
+  // Whether the caller has blocked this user (drives the Block/Unblock toggle).
+  const blocked: any = await c.env.DB.prepare(
+    'select 1 from blocks where blocker_id = ? and blocked_id = ?',
+  )
+    .bind(c.get('userId'), targetId)
+    .first()
   return c.json({
     id: user.id,
     display_name: user.display_name,
@@ -1073,8 +1223,53 @@ app.get('/users/:id', async (c) => {
     average_rating: average,
     business_name: user.business_name,
     verified: user.verified,
+    gigs_posted: hirer?.posted ?? 0,
+    gigs_paid: hirer?.paid ?? 0,
+    i_blocked: blocked ? 1 : 0,
     created_at: user.created_at,
   })
+})
+
+/* ============================== BLOCKING =========================== */
+// One-directional exclude. Helper returns ids the caller blocked OR who blocked
+// the caller — used to filter feeds and gate claims/messaging both ways.
+async function blockedSet(db: D1Database, userId: string): Promise<Set<string>> {
+  const rows = await db
+    .prepare(
+      'select blocked_id as id from blocks where blocker_id = ?1 union select blocker_id from blocks where blocked_id = ?1',
+    )
+    .bind(userId)
+    .all()
+  return new Set((rows.results as any[]).map((r) => r.id))
+}
+
+app.post('/users/:id/block', async (c) => {
+  const userId = c.get('userId')
+  const target = c.req.param('id')
+  if (target === userId) return c.json({ error: 'cannot block yourself' }, 400)
+  const exists = await c.env.DB.prepare('select id from users where id = ?').bind(target).first()
+  if (!exists) return c.json({ error: 'not found' }, 404)
+  await c.env.DB.prepare('insert or ignore into blocks (blocker_id, blocked_id) values (?, ?)')
+    .bind(userId, target)
+    .run()
+  return c.json({ ok: true, blocked: true })
+})
+
+app.delete('/users/:id/block', async (c) => {
+  await c.env.DB.prepare('delete from blocks where blocker_id = ? and blocked_id = ?')
+    .bind(c.get('userId'), c.req.param('id'))
+    .run()
+  return c.json({ ok: true, blocked: false })
+})
+
+app.get('/me/blocks', async (c) => {
+  const rows = await c.env.DB.prepare(
+    `select u.id, u.display_name from blocks b join users u on u.id = b.blocked_id
+      where b.blocker_id = ? order by b.created_at desc`,
+  )
+    .bind(c.get('userId'))
+    .all()
+  return c.json(rows.results)
 })
 
 app.get('/users/:id/reviews', async (c) => {
@@ -1212,6 +1407,22 @@ async function isAdmin(c: any): Promise<boolean> {
     .first()
   return !!row?.is_admin
 }
+
+// At-a-glance operational counts for the admin dashboard.
+app.get('/admin/stats', async (c) => {
+  if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)
+  const row: any = await c.env.DB.prepare(
+    `select
+       (select count(*) from users where deleted = 0) as users,
+       (select count(*) from users where verified = 1) as verified_businesses,
+       (select count(*) from gigs) as gigs,
+       (select count(*) from gigs where status = 'AVAILABLE') as gigs_available,
+       (select count(*) from gigs where status = 'COMPLETED') as gigs_completed,
+       (select count(*) from posts) as posts,
+       (select count(*) from reports where status = 'OPEN') as open_reports`,
+  ).first()
+  return c.json(row)
+})
 
 app.get('/admin/reports', async (c) => {
   if (!(await isAdmin(c))) return c.json({ error: 'admin only' }, 403)

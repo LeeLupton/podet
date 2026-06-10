@@ -200,6 +200,38 @@ describe('UI surface sweep (no 404/500 from any api.js route)', () => {
       (await call(`/admin/users/${b.id}/verify`, { method: 'POST' }, a.token)).status,
     )
 
+    // Lifecycle, blocking, account surface
+    const gid3 = await postGig(a.token)
+    check('POST /gigs/:id/claim (3)', (await claim(gid3, b.token)).status)
+    check(
+      'POST /gigs/:id/done',
+      (await call(`/gigs/${gid3}/done`, { method: 'POST' }, b.token)).status,
+    )
+    check(
+      'POST /gigs/:id/unclaim',
+      (await call(`/gigs/${gid3}/unclaim`, { method: 'POST' }, a.token)).status,
+    )
+    check(
+      'POST /users/:id/block',
+      (await call(`/users/${b.id}/block`, { method: 'POST' }, a.token)).status,
+    )
+    check('GET /me/blocks', (await call('/me/blocks', {}, a.token)).status)
+    check(
+      'DELETE /users/:id/block',
+      (await call(`/users/${b.id}/block`, { method: 'DELETE' }, a.token)).status,
+    )
+    check('GET /admin/stats', (await call('/admin/stats', {}, a.token)).status)
+    check(
+      'POST /me/delete',
+      (
+        await call(
+          '/me/delete',
+          { method: 'POST', body: JSON.stringify({ password: 'wrong' }) },
+          a.token,
+        )
+      ).status,
+    )
+
     // Profiles + push surface
     check('GET /users/:id', (await call(`/users/${b.id}`, {}, a.token)).status)
     check('GET /users/:id/reviews', (await call(`/users/${b.id}/reviews`, {}, a.token)).status)

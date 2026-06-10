@@ -16,6 +16,8 @@ create table if not exists users (
   is_admin      integer not null default 0,    -- moderation role (set by the operator via SQL)
   business_name text,                          -- self-asserted (badge only when verified)
   verified      integer not null default 0,    -- admin-approved business badge
+  session_epoch integer not null default 0,      -- bump to invalidate all existing sessions
+  deleted       integer not null default 0,      -- anonymized/closed account
   created_at    text not null default (datetime('now'))
 );
 
@@ -47,6 +49,7 @@ create table if not exists gigs (
   window_end   text,
   notice_hours integer not null default 0,            -- minimum lead time before the slot
   scheduled_at text,                                  -- slot the worker picked when claiming
+  done_at      text,                                  -- worker marked the work finished
   created_at   text not null default (datetime('now'))
 );
 
@@ -134,3 +137,13 @@ create table if not exists reports (
 );
 
 create index if not exists idx_reports_status on reports(status);
+
+-- BLOCKS — one-directional mute/exclude between users.
+create table if not exists blocks (
+  blocker_id text not null references users(id) on delete cascade,
+  blocked_id text not null references users(id) on delete cascade,
+  created_at text not null default (datetime('now')),
+  primary key (blocker_id, blocked_id)
+);
+
+create index if not exists idx_blocks_blocker on blocks(blocker_id);

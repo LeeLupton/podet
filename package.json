@@ -10,6 +10,7 @@
     "dev": "wrangler pages dev",
     "db:init": "wrangler d1 execute podnet --remote --file schema.sql",
     "db:init:local": "wrangler d1 execute podnet --local --file schema.sql",
+    "db:backup": "wrangler d1 export podnet --remote --output podnet-backup.sql",
     "deploy": "wrangler pages deploy",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",

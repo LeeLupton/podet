@@ -148,6 +148,15 @@ export function localInputToIso(value) {
   return Number.isNaN(d.getTime()) ? null : d.toISOString()
 }
 
+// ISO string → <input type="datetime-local"> value (local wall-clock), or ''.
+export function isoToLocalInput(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 export function money(n) {
   return `$${Number(n).toLocaleString()}`
 }

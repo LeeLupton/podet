@@ -3,7 +3,7 @@
 
 import { ApiError, api } from './api.js'
 import { getCoords, requestGeolocation, setCoords } from './location.js'
-import { clear, h, localInputToIso, money, openImage, toast } from './ui.js'
+import { clear, h, isoToLocalInput, localInputToIso, money, openImage, toast } from './ui.js'
 
 // Optional prefill when "Turn into a gig" comes from a board post.
 let pendingPrefill = null
@@ -86,8 +86,16 @@ export function renderPostForm(root) {
 
   // Scheduling: hours that work for the hirer + minimum notice. The worker
   // picks a slot inside this window when claiming.
-  const winStart = h('input', { class: 'input', type: 'datetime-local' })
-  const winEnd = h('input', { class: 'input', type: 'datetime-local' })
+  const winStart = h('input', {
+    class: 'input',
+    type: 'datetime-local',
+    value: isoToLocalInput(prefill?.window_start),
+  })
+  const winEnd = h('input', {
+    class: 'input',
+    type: 'datetime-local',
+    value: isoToLocalInput(prefill?.window_end),
+  })
   const noticeInput = h('input', {
     class: 'input',
     type: 'number',
