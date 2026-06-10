@@ -288,6 +288,7 @@ async function renderExpanded(p, wrap, reloadList) {
     maxlength: '1000',
     placeholder: 'Add a comment…',
   })
+  const commentBtn = h('button', { class: 'btn-ghost', type: 'submit' }, 'Send')
   const commentForm = h(
     'form',
     {
@@ -296,6 +297,7 @@ async function renderExpanded(p, wrap, reloadList) {
         e.preventDefault()
         const text = commentInput.value.trim()
         if (!text) return
+        commentBtn.disabled = true
         try {
           await api.addComment(p.id, text)
           commentInput.value = ''
@@ -303,11 +305,13 @@ async function renderExpanded(p, wrap, reloadList) {
           reloadList()
         } catch (err) {
           toast(err instanceof ApiError ? err.message : 'Could not comment', 'error')
+        } finally {
+          commentBtn.disabled = false
         }
       },
     },
     commentInput,
-    h('button', { class: 'btn-ghost', type: 'submit' }, 'Send'),
+    commentBtn,
   )
 
   async function refresh() {

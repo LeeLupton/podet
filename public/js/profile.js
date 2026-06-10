@@ -7,6 +7,7 @@ import { getUser, logout } from './auth.js'
 import { renderRatePanel } from './post.js'
 import {
   clear,
+  confirmSheet,
   emptyState,
   errorState,
   fmtDate,
@@ -529,6 +530,7 @@ function messagesThread(g) {
     maxlength: '1000',
     placeholder: 'Message…',
   })
+  const sendBtn = h('button', { class: 'btn-ghost', type: 'submit' }, 'Send')
   const form = h(
     'form',
     {
@@ -537,17 +539,20 @@ function messagesThread(g) {
         e.preventDefault()
         const text = input.value.trim()
         if (!text) return
+        sendBtn.disabled = true
         try {
           await api.sendGigMessage(g.id, text)
           input.value = ''
           await loadThread()
         } catch (err) {
           toast(err instanceof ApiError ? err.message : 'Could not send', 'error')
+        } finally {
+          sendBtn.disabled = false
         }
       },
     },
     input,
-    h('button', { class: 'btn-ghost', type: 'submit' }, 'Send'),
+    sendBtn,
   )
 
   async function loadThread() {
@@ -905,19 +910,21 @@ function dangerBlock(root) {
       class: 'form hidden',
       onSubmit: async (e) => {
         e.preventDefault()
-        if (
-          !confirm(
-            'Permanently close your account? Reviews stay on the ledger but your profile is removed and you are logged out.',
-          )
-        ) {
-          return
-        }
+        const sure = await confirmSheet('Permanently close your account?', {
+          body: 'Reviews stay on the ledger but your profile is removed and you are logged out everywhere.',
+          confirmLabel: 'Delete account',
+          danger: true,
+        })
+        if (!sure) return
+        const btn = form.querySelector('button[type="submit"]')
+        btn.disabled = true
         try {
           await api.deleteAccount(pw.value)
           toast('Account closed')
           if (onLoggedOut) onLoggedOut()
         } catch (err) {
           toast(err instanceof ApiError ? err.message : 'Could not close account', 'error')
+          btn.disabled = false
         }
       },
     },

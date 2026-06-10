@@ -8,8 +8,8 @@ self.addEventListener('push', (event) => {
     if (event.data) data.body = event.data.text()
   }
   event.waitUntil(
-    self.registration.showNotification(data.title, {
-      body: data.body,
+    self.registration.showNotification(data.title || 'PodNet', {
+      body: data.body || '',
       icon: '/icon.png',
       badge: '/icon.png',
       data: { url: data.url || '/' },

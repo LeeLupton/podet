@@ -1,3 +1,9 @@
 # Copy to `.dev.vars` for local `wrangler dev`. `.dev.vars` is git-ignored — never commit real secrets.
-# In production, set this with: wrangler pages secret put SESSION_SECRET
+# In production these are set as Pages secrets by `npm run setup` (or `wrangler pages secret put`).
 SESSION_SECRET="generate-a-long-random-string-here"
+
+# Web push (optional locally) — without these, push is silently disabled and the
+# app works normally otherwise. `npm run setup` generates and stores them in prod.
+# VAPID_PUBLIC_KEY="base64url-P-256-public-key"
+# VAPID_PRIVATE_KEY="base64url-P-256-private-key"
+# VAPID_SUBJECT="mailto:you@example.com"

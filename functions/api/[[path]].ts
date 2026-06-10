@@ -455,7 +455,7 @@ app.get('/gigs/mine', async (c) => {
     `select g.*, wp.display_name as worker_name,
             (select count(*) from gig_messages m where m.gig_id = g.id) as message_count
        from gigs g left join users wp on wp.id = g.claimed_by
-      where g.posted_by = ? order by g.created_at desc`,
+      where g.posted_by = ? order by g.created_at desc limit 200`,
   )
     .bind(userId)
     .all()
@@ -463,7 +463,7 @@ app.get('/gigs/mine', async (c) => {
     `select g.*, hp.display_name as poster_name,
             (select count(*) from gig_messages m where m.gig_id = g.id) as message_count
        from gigs g join users hp on hp.id = g.posted_by
-      where g.claimed_by = ? order by g.created_at desc`,
+      where g.claimed_by = ? order by g.created_at desc limit 200`,
   )
     .bind(userId)
     .all()
@@ -518,6 +518,17 @@ app.post('/gigs', async (c) => {
   const g = parsed.gig
   const from_post_id = b.from_post_id ? String(b.from_post_id) : null
 
+  // from_post_id carries a FK — verify it up front so a stale/bogus id is a
+  // clean 400 instead of a constraint failure. The row also feeds the
+  // became-a-gig notification below.
+  let origin: any = null
+  if (from_post_id) {
+    origin = await c.env.DB.prepare('select author_id from posts where id = ?')
+      .bind(from_post_id)
+      .first()
+    if (!origin) return c.json({ error: 'the board post this gig came from no longer exists' }, 400)
+  }
+
   const id = crypto.randomUUID()
   await c.env.DB.prepare(
     `insert into gigs (id, task_type, neighborhood, cash_payout, est_hours, lat, lng, description, posted_by, from_post_id, window_start, window_end, notice_hours)
@@ -540,11 +551,8 @@ app.post('/gigs', async (c) => {
     )
     .run()
   // Best-effort: if this gig grew out of a board post, tell the post author.
-  if (from_post_id) {
-    const origin: any = await c.env.DB.prepare('select author_id from posts where id = ?')
-      .bind(from_post_id)
-      .first()
-    if (origin && origin.author_id !== userId) {
+  if (from_post_id && origin) {
+    if (origin.author_id !== userId) {
       fireAndForget(
         c,
         notifyUser(
@@ -713,16 +721,31 @@ app.put('/gigs/:id', async (c) => {
 })
 
 // Delete your own gig — not once COMPLETED (keeps reviews/reputation honest).
+// The row cascade removes gig_photos rows; the R2 objects need explicit cleanup
+// (same pattern as account deletion) or they'd be orphaned in the bucket.
 app.delete('/gigs/:id', async (c) => {
   const userId = c.get('userId')
   const id = c.req.param('id')
+  const photos = await c.env.DB.prepare(
+    `select p.r2_key from gig_photos p join gigs g on g.id = p.gig_id
+      where g.id = ? and g.posted_by = ? and g.status <> 'COMPLETED'`,
+  )
+    .bind(id, userId)
+    .all()
   const res = await c.env.DB.prepare(
     `delete from gigs where id = ? and posted_by = ? and status <> 'COMPLETED'`,
   )
     .bind(id, userId)
     .run()
-  if (res.meta.changes !== 1) {
+  if (res.meta.changes < 1) {
     return c.json({ error: 'not found, not yours, or already completed' }, 403)
+  }
+  for (const ph of photos.results as any[]) {
+    try {
+      await c.env.PHOTOS.delete(ph.r2_key)
+    } catch {
+      // best-effort cleanup
+    }
   }
   return c.json({ ok: true })
 })
@@ -1336,7 +1359,7 @@ app.delete('/users/:id/block', async (c) => {
 app.get('/me/blocks', async (c) => {
   const rows = await c.env.DB.prepare(
     `select u.id, u.display_name from blocks b join users u on u.id = b.blocked_id
-      where b.blocker_id = ? order by b.created_at desc`,
+      where b.blocker_id = ? order by b.created_at desc limit 200`,
   )
     .bind(c.get('userId'))
     .all()

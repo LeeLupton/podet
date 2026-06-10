@@ -229,6 +229,7 @@ export function renderRatePanel(gig, onDone) {
   const note = h('textarea', {
     class: 'input',
     rows: '2',
+    maxlength: '1000',
     placeholder: 'Optional note for the review',
   })
   const payBtn = h('button', { class: 'btn-primary', disabled: true }, 'Close & pay')
