@@ -55,12 +55,12 @@ export function renderPostForm(root) {
         } catch (err) {
           toast(err.message, 'error')
         } finally {
-          locBtn.textContent = '📍 Use my location'
+          locBtn.textContent = 'Use my location'
           locBtn.disabled = false
         }
       },
     },
-    '📍 Use my location',
+    'Use my location',
   )
 
   const f = {
@@ -307,7 +307,7 @@ export function renderRatePanel(gig, onDone) {
   const addPhotoBtn = h(
     'button',
     { type: 'button', class: 'btn-ghost', onClick: () => fileInput.click() },
-    '📷 Add work photos',
+    'Add work photos',
   )
 
   return h(

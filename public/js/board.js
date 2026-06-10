@@ -35,7 +35,7 @@ function composer() {
   const pinBtn = h(
     'button',
     { type: 'button', class: 'btn-ghost', onClick: locate },
-    '📍 Use my location',
+    'Use my location',
   )
   async function locate() {
     pinBtn.textContent = 'Locating…'
@@ -43,9 +43,9 @@ function composer() {
       const c = await requestGeolocation()
       pin.lat = c.lat
       pin.lng = c.lng
-      pinBtn.textContent = 'Pin set ✓'
+      pinBtn.textContent = 'Location set'
     } catch (err) {
-      pinBtn.textContent = '📍 Use my location'
+      pinBtn.textContent = 'Use my location'
       toast(err.message, 'error')
     }
   }
@@ -70,7 +70,7 @@ function composer() {
           body.value = ''
           area.value = ''
           pin.lat = pin.lng = null
-          pinBtn.textContent = '📍 Use my location'
+          pinBtn.textContent = 'Use my location'
           toast('Posted to the board')
           load()
         } catch (err) {
@@ -140,7 +140,7 @@ function postCard(p) {
   const counts = h(
     'div',
     { class: 'post-counts' },
-    `${p.comment_count} comment${p.comment_count === 1 ? '' : 's'} · ${p.interest_count} helping${p.gig_count > 0 ? ' · now a gig ✓' : ''}`,
+    `${p.comment_count} comment${p.comment_count === 1 ? '' : 's'} · ${p.interest_count} helping${p.gig_count > 0 ? ' · now a gig' : ''}`,
   )
 
   const expandWrap = h('div', { class: 'post-expand hidden' })
@@ -182,7 +182,7 @@ async function renderExpanded(p, wrap, reloadList) {
   let interested = !!full.i_am_interested
   const helpBtn = h('button', { class: 'btn-ghost' }, '')
   function paintHelp() {
-    helpBtn.textContent = interested ? '✓ I’m helping' : 'I’ll help'
+    helpBtn.textContent = interested ? 'Helping' : 'I’ll help'
     helpBtn.classList.toggle('on', interested)
   }
   paintHelp()

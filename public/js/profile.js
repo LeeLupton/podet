@@ -178,7 +178,7 @@ function postedGigCard(g, root) {
     )
   } else if (g.status === 'CLAIMED') {
     if (g.done_at) {
-      card.append(h('div', { class: 'gig-meta sched' }, '✓ Worker marked it done — review & pay'))
+      card.append(h('div', { class: 'gig-meta sched' }, 'Work marked done — review and pay'))
     }
     // Inline inspect + rate panel, plus a way to drop a no-show worker.
     card.append(renderRatePanel(g, () => renderProfile(root)))
@@ -240,7 +240,7 @@ function claimedGigCard(g, root) {
   if (g.status === 'CLAIMED') {
     const actions = h('div', { class: 'post-actions' })
     if (g.done_at) {
-      actions.append(h('span', { class: 'gig-meta sched' }, '✓ Marked done — waiting on the hirer'))
+      actions.append(h('span', { class: 'gig-meta sched' }, 'Marked done — waiting on the hirer'))
     } else {
       actions.append(
         h(
@@ -257,7 +257,7 @@ function claimedGigCard(g, root) {
               }
             },
           },
-          "✓ I'm done",
+          'Mark work done',
         ),
       )
     }
@@ -342,7 +342,7 @@ function reviewCard(r) {
 // A tappable name that opens another user's public portfolio. `verified`
 // renders the admin-granted business badge.
 export function nameLink(name, userId, verified = 0) {
-  const label = verified ? `${name || 'Someone'} ✔` : name || 'Someone'
+  const label = verified ? `${name || 'Someone'} ✓` : name || 'Someone'
   if (!userId) return document.createTextNode(label)
   return h(
     'button',
@@ -369,7 +369,7 @@ export async function openUserProfile(userId) {
       h(
         'h2',
         { class: 'me-name' },
-        (profile.display_name || 'Neighbor') + (profile.verified ? ' ✔' : ''),
+        (profile.display_name || 'Neighbor') + (profile.verified ? ' ✓' : ''),
       ),
       profile.business_name
         ? h(
@@ -466,8 +466,8 @@ function pushSupported() {
 
 function notificationsBlock() {
   if (!pushSupported()) return document.createTextNode('')
-  const btn = h('button', { class: 'btn-ghost' }, '🔔 Enable notifications')
-  if (Notification.permission === 'granted') btn.textContent = '🔔 Notifications on'
+  const btn = h('button', { class: 'btn-ghost' }, 'Enable notifications')
+  if (Notification.permission === 'granted') btn.textContent = 'Notifications enabled'
   btn.addEventListener('click', () => enableNotifications(btn))
   return h(
     'div',
@@ -506,7 +506,7 @@ async function enableNotifications(btn) {
       applicationServerKey: urlBase64ToUint8Array(key),
     })
     await api.subscribePush(sub.toJSON())
-    btn.textContent = '🔔 Notifications on'
+    btn.textContent = 'Notifications enabled'
     toast('Notifications enabled')
   } catch (err) {
     toast(err instanceof ApiError ? err.message : 'Could not enable notifications', 'error')
@@ -563,7 +563,7 @@ function messagesThread(g) {
     }
   }
 
-  const label = g.message_count > 0 ? `💬 Messages (${g.message_count})` : '💬 Messages'
+  const label = g.message_count > 0 ? `Messages (${g.message_count})` : 'Messages'
   const toggle = h(
     'button',
     {
@@ -592,9 +592,9 @@ function businessBlock(profile) {
   if (profile.business_name) name.value = profile.business_name
   const status = profile.business_name
     ? profile.verified
-      ? '✔ Verified business'
+      ? 'Verified business'
       : 'Verification pending — an admin will review it'
-    : 'Registering as a business adds a ✔ badge once an admin verifies you.'
+    : 'Registering as a business adds a verified badge once an admin approves it.'
   const save = h('button', { class: 'btn-ghost', type: 'submit' }, 'Save business name')
   return h(
     'form',
@@ -644,7 +644,7 @@ function supportBlock() {
           h(
             'div',
             { class: 'gig-meta' },
-            `${t.status === 'OPEN' ? '⏳' : '✓'} ${t.reason.slice(0, 60)} · ${fmtDate(t.created_at)}`,
+            `${t.status === 'OPEN' ? 'Open' : 'Resolved'} · ${t.reason.slice(0, 60)} · ${fmtDate(t.created_at)}`,
           ),
         )
       }
@@ -733,14 +733,14 @@ function adminBlock(root) {
               try {
                 await api.verifyUser(r.subject_id, true)
                 await api.resolveReport(r.id)
-                toast('Verified ✔')
+                toast('Verified')
                 reload()
               } catch (err) {
                 toast(err instanceof ApiError ? err.message : 'Failed', 'error')
               }
             },
           },
-          'Verify ✔',
+          'Verify',
         ),
       )
     }
