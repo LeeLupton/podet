@@ -3,7 +3,7 @@
 
 import { ApiError, api } from './api.js'
 import { getCoords, requestGeolocation, setCoords } from './location.js'
-import { clear, h, money, openImage, toast } from './ui.js'
+import { clear, h, localInputToIso, money, openImage, toast } from './ui.js'
 
 // Optional prefill when "Turn into a gig" comes from a board post.
 let pendingPrefill = null
@@ -84,6 +84,19 @@ export function renderPostForm(root) {
   })
   if (prefill?.description) description.value = prefill.description
 
+  // Scheduling: hours that work for the hirer + minimum notice. The worker
+  // picks a slot inside this window when claiming.
+  const winStart = h('input', { class: 'input', type: 'datetime-local' })
+  const winEnd = h('input', { class: 'input', type: 'datetime-local' })
+  const noticeInput = h('input', {
+    class: 'input',
+    type: 'number',
+    min: '0',
+    step: '1',
+    placeholder: '0',
+  })
+  if (prefill?.notice_hours) noticeInput.value = String(prefill.notice_hours)
+
   const isEdit = !!prefill?.editId
   const submitBtn = h(
     'button',
@@ -120,6 +133,9 @@ export function renderPostForm(root) {
           lat,
           lng,
           from_post_id: prefill?.from_post_id ?? null,
+          window_start: localInputToIso(winStart.value),
+          window_end: localInputToIso(winEnd.value),
+          notice_hours: noticeInput.value ? Number(noticeInput.value) : 0,
         }
         submitBtn.disabled = true
         submitBtn.textContent = isEdit ? 'Saving…' : 'Posting…'
@@ -145,6 +161,11 @@ export function renderPostForm(root) {
       'Location',
       h('div', { class: 'loc-fields' }, locBtn, h('div', { class: 'row' }, latInput, lngInput)),
     ),
+    labeled(
+      'When works for you (optional)',
+      h('div', { class: 'loc-fields' }, h('div', { class: 'row' }, winStart, winEnd)),
+    ),
+    labeled('Notice you need (hours)', noticeInput),
     submitBtn,
   )
 

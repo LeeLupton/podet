@@ -5,7 +5,18 @@
 import { ApiError, api } from './api.js'
 import { getCoords, requestGeolocation, setCoords } from './location.js'
 import { nameLink } from './profile.js'
-import { clear, emptyState, errorState, h, money, openSheet, spinner, toast } from './ui.js'
+import {
+  clear,
+  emptyState,
+  errorState,
+  fmtDateTime,
+  h,
+  localInputToIso,
+  money,
+  openSheet,
+  spinner,
+  toast,
+} from './ui.js'
 
 const DEFAULT_RADIUS = 5
 let radius = DEFAULT_RADIUS
@@ -207,23 +218,36 @@ function gigCard(g) {
 }
 
 function openGig(g) {
+  const windowed = !!(g.window_start && g.window_end)
+  const slotInput = windowed ? h('input', { class: 'input', type: 'datetime-local' }) : null
   const claimBtn = h('button', { class: 'btn-primary', onClick: claim }, 'Claim')
 
   async function claim() {
+    const slot = windowed ? localInputToIso(slotInput.value) : null
+    if (windowed && !slot) {
+      toast('Pick a time within the posted window first', 'error')
+      return
+    }
     claimBtn.disabled = true
     claimBtn.textContent = 'Claiming…'
     try {
-      await api.claimGig(g.id)
+      await api.claimGig(g.id, slot)
       claimBtn.textContent = 'Claimed ✓'
       claimBtn.classList.add('claimed')
       toast('Gig claimed — it’s yours')
       load() // re-query: claimed gig leaves the Nearby list
       setTimeout(close, 900)
     } catch (err) {
-      // "unavailable or your own" → re-query and inform inline
-      claimBtn.textContent = 'Unavailable'
       toast(err instanceof ApiError ? err.message : 'Could not claim gig', 'error')
-      load()
+      if (err instanceof ApiError && err.status === 400) {
+        // bad slot — let them fix the time and retry
+        claimBtn.disabled = false
+        claimBtn.textContent = 'Claim'
+      } else {
+        // unavailable or your own → re-query
+        claimBtn.textContent = 'Unavailable'
+        load()
+      }
     }
   }
 
@@ -238,11 +262,41 @@ function openGig(g) {
       `${g.distance_mi.toFixed(1)} mi · ${g.est_hours} hr · ${g.neighborhood}`,
     ),
     g.poster_name
-      ? h('div', { class: 'gig-meta' }, 'Posted by ', nameLink(g.poster_name, g.posted_by))
+      ? h(
+          'div',
+          { class: 'gig-meta' },
+          'Posted by ',
+          nameLink(g.poster_name, g.posted_by, g.poster_verified),
+        )
       : null,
     h('p', { class: 'gig-desc' }, g.description),
+    windowed
+      ? h(
+          'div',
+          { class: 'gig-meta' },
+          `Works for the hirer: ${fmtDateTime(g.window_start)} – ${fmtDateTime(g.window_end)}${g.notice_hours ? ` · needs ${g.notice_hours}h notice` : ''}`,
+        )
+      : null,
+    windowed ? h('label', { class: 'lbl' }, h('span', {}, 'Pick your time'), slotInput) : null,
     mapLink(g),
     claimBtn,
+    h(
+      'button',
+      {
+        class: 'link-btn danger',
+        onClick: async () => {
+          const reason = prompt('Why are you reporting this gig?')
+          if (!reason || !reason.trim()) return
+          try {
+            await api.report('gig', g.id, reason.trim())
+            toast('Reported — an admin will review it')
+          } catch (err) {
+            toast(err instanceof ApiError ? err.message : 'Could not report', 'error')
+          }
+        },
+      },
+      'Report this gig',
+    ),
   )
   const close = openSheet(content)
 }

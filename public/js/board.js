@@ -133,7 +133,7 @@ function postCard(p) {
   const header = h(
     'div',
     { class: 'post-head' },
-    h('span', { class: 'post-author' }, nameLink(p.author_name, p.author_id)),
+    h('span', { class: 'post-author' }, nameLink(p.author_name, p.author_id, p.author_verified)),
     p.area_label ? h('span', { class: 'post-area' }, p.area_label) : null,
   )
   const bodyEl = h('p', { class: 'post-body' }, p.body)
@@ -219,7 +219,24 @@ async function renderExpanded(p, wrap, reloadList) {
     full.gig_count > 0 ? 'Post another gig from this' : 'Turn into a gig',
   )
 
-  const actions = h('div', { class: 'post-actions' }, helpBtn, turnBtn)
+  const reportBtn = h(
+    'button',
+    {
+      class: 'link-btn danger',
+      onClick: async () => {
+        const reason = prompt('Why are you reporting this post?')
+        if (!reason || !reason.trim()) return
+        try {
+          await api.report('post', p.id, reason.trim())
+          toast('Reported — an admin will review it')
+        } catch (err) {
+          toast(err instanceof ApiError ? err.message : 'Could not report', 'error')
+        }
+      },
+    },
+    'Report',
+  )
+  const actions = h('div', { class: 'post-actions' }, helpBtn, turnBtn, reportBtn)
 
   // owner controls
   if (me && full.author_id === me.id) {
@@ -290,7 +307,11 @@ function commentRow(cm, me, reloadList, refresh) {
   const row = h(
     'div',
     { class: 'comment' },
-    h('span', { class: 'comment-author' }, nameLink(cm.author_name, cm.author_id)),
+    h(
+      'span',
+      { class: 'comment-author' },
+      nameLink(cm.author_name, cm.author_id, cm.author_verified),
+    ),
     h('span', { class: 'comment-body' }, cm.body),
     h('span', { class: 'comment-date' }, fmtDate(cm.created_at)),
   )

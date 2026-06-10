@@ -665,3 +665,18 @@ textarea.input {
 .warn-text {
   color: var(--warning);
 }
+
+/* Verified business badge + scheduling + messages */
+.vbadge {
+  color: var(--accent);
+}
+.sched {
+  color: var(--accent);
+  opacity: 1;
+}
+.msg-wrap {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

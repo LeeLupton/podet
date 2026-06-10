@@ -128,6 +128,26 @@ export function fmtDate(iso) {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+// Local-readable date+time for scheduled slots / windows.
+export function fmtDateTime(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+// <input type="datetime-local"> value (local time) → ISO string, or null.
+export function localInputToIso(value) {
+  if (!value) return null
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
+}
+
 export function money(n) {
   return `$${Number(n).toLocaleString()}`
 }

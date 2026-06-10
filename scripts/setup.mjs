@@ -21,7 +21,7 @@
 
 import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -106,6 +106,23 @@ if (wrangler(['d1', 'execute', PROJECT, '--remote', '--file', 'schema.sql', '-y'
   die('Failed to apply schema.sql')
 }
 ok('Schema applied')
+
+// --- 4a. migrations (ALTERs for databases created by older versions) ------
+heading('Applying migrations')
+const migrationsDir = join(ROOT, 'migrations')
+for (const file of readdirSync(migrationsDir).sort()) {
+  if (!file.endsWith('.sql')) continue
+  const res = wrangler(
+    ['d1', 'execute', PROJECT, '--remote', '--file', `migrations/${file}`, '-y'],
+    {
+      capture: true,
+    },
+  )
+  const out = `${res.stdout}\n${res.stderr}`
+  if (res.status === 0) ok(`migration ${file} applied`)
+  else if (/duplicate column name/i.test(out)) ok(`migration ${file} already applied`)
+  else die(`Migration ${file} failed.\n${out}`)
+}
 
 // --- 4b. R2 bucket for photos --------------------------------------------
 heading('Ensuring R2 bucket "podnet-photos"')

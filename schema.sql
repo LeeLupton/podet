@@ -13,6 +13,9 @@ create table if not exists users (
   total_gigs    integer not null default 0,
   rating_sum    integer not null default 0,    -- average is derived, never stored
   rating_count  integer not null default 0,
+  is_admin      integer not null default 0,    -- moderation role (set by the operator via SQL)
+  business_name text,                          -- self-asserted (badge only when verified)
+  verified      integer not null default 0,    -- admin-approved business badge
   created_at    text not null default (datetime('now'))
 );
 
@@ -40,6 +43,10 @@ create table if not exists gigs (
   posted_by    text not null references users(id),    -- the hirer
   claimed_by   text references users(id),             -- the worker
   from_post_id text references posts(id),
+  window_start text,                                  -- optional: hours that work for the hirer
+  window_end   text,
+  notice_hours integer not null default 0,            -- minimum lead time before the slot
+  scheduled_at text,                                  -- slot the worker picked when claiming
   created_at   text not null default (datetime('now'))
 );
 
@@ -103,3 +110,27 @@ create index if not exists idx_gigs_bbox     on gigs(lat, lng);
 create index if not exists idx_reviews_wkr   on reviews(worker_id);
 create index if not exists idx_posts_time    on posts(created_at);
 create index if not exists idx_comments_post on post_comments(post_id);
+
+-- GIG MESSAGES — private thread between the hirer and the worker of one gig.
+create table if not exists gig_messages (
+  id         text primary key,
+  gig_id     text not null references gigs(id) on delete cascade,
+  sender_id  text not null references users(id),
+  body       text not null,
+  created_at text not null default (datetime('now'))
+);
+
+create index if not exists idx_gig_messages_gig on gig_messages(gig_id);
+
+-- REPORTS — content/user reports, verification requests, and support tickets.
+create table if not exists reports (
+  id          text primary key,
+  reporter_id text not null references users(id),
+  kind        text not null check (kind in ('post','comment','gig','user','support')),
+  subject_id  text,                              -- id of the reported thing (null for support)
+  reason      text not null,
+  status      text not null default 'OPEN' check (status in ('OPEN','RESOLVED')),
+  created_at  text not null default (datetime('now'))
+);
+
+create index if not exists idx_reports_status on reports(status);

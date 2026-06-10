@@ -166,6 +166,24 @@ D1 does not pause, so there is no keep-alive to run.
   scripts or styles at all (strict CSP: `script-src 'self'; style-src 'self'`).
 - **Board → gig linkage** — a post that has been turned into a gig shows "now a gig ✓".
 - **Change password** — from the Me tab (requires the current password; rate-limited).
+- **Scheduling** — a hirer can post the hours that work for them plus the notice they need;
+  the worker claims by picking a slot inside that window, at least `notice` hours out. The
+  slot shows on both sides and clears if the claim is released.
+- **Gig messaging** — a private thread between the hirer and worker of a claimed gig
+  (directions, gate codes, timing), with a push notification to the other party. Not open
+  DMs by design — no spam surface.
+- **Reports & support** — report any gig/post/comment (with a reason) or file a support
+  ticket from the Me tab; you can see your ticket status there too.
+- **Admin & moderation** — a `users.is_admin` flag adds an Admin panel to the Me tab:
+  triage reports, remove content, resolve tickets, and verify businesses. Admin status
+  confers no gig authority — rating stays per-gig ownership, per the original trust model.
+  Grant the first admin (yourself) with:
+  ```bash
+  npx wrangler d1 execute podnet --remote --command "update users set is_admin=1 where email='you@example.com'"
+  ```
+- **Verified business ✔** — set a business name in the Me tab; that files a verification
+  request; an admin approves it and a ✔ badge appears next to your name everywhere.
+  Changing the name clears the badge until re-verified.
 
 ### Deferred by design
 - **Email password-reset / verification** — there is currently no free all-Cloudflare way to
