@@ -87,6 +87,11 @@ body {
   opacity: 0.7;
   margin: 0 0 4px;
 }
+.noscript {
+  margin: 40vh 24px 0;
+  text-align: center;
+  font-size: 16px;
+}
 
 /* Inputs */
 .input {
@@ -102,6 +107,13 @@ body {
 .input:focus {
   outline: 2px solid var(--accent);
   outline-offset: 0;
+}
+/* Flag out-of-range/invalid values once the user has interacted with the field. */
+.input:user-invalid {
+  border-color: var(--warning);
+}
+.input:user-invalid:focus {
+  outline-color: var(--warning);
 }
 textarea.input {
   resize: vertical;
@@ -156,9 +168,19 @@ textarea.input {
   width: 100%;
   cursor: pointer;
 }
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.btn-primary:active:not(:disabled) {
+  filter: brightness(0.92);
+}
 .btn-primary:disabled {
   opacity: 0.6;
   cursor: default;
+}
+.btn-danger {
+  background: var(--warning);
+  color: #1a1206;
 }
 .btn-primary.claimed {
   background: var(--border);
@@ -173,6 +195,12 @@ textarea.input {
   padding: 8px 14px;
   font-size: 15px;
   cursor: pointer;
+}
+.btn-ghost:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.btn-ghost:active:not(:disabled) {
+  background: rgba(124, 179, 66, 0.08);
 }
 .btn-ghost.on {
   border-color: var(--accent);
@@ -300,6 +328,7 @@ textarea.input {
   z-index: 50;
 }
 .sheet {
+  position: relative;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 18px 18px 0 0;
@@ -308,6 +337,25 @@ textarea.input {
   padding: 20px 18px calc(24px + env(safe-area-inset-bottom));
   max-height: 88vh;
   overflow-y: auto;
+}
+.sheet-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+  z-index: 1;
+}
+.sheet-close:hover {
+  opacity: 1;
 }
 /* Centered variant (photo viewer) — floats mid-screen on every device. */
 .backdrop-center {
@@ -630,6 +678,12 @@ textarea.input {
 #tabbar .tab-on {
   opacity: 1;
   color: var(--accent);
+}
+#tabbar .tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 8px;
+  opacity: 1;
 }
 
 /* Toasts */

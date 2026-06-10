@@ -7,6 +7,7 @@ import { getUser, logout } from './auth.js'
 import { renderRatePanel } from './post.js'
 import {
   clear,
+  confirmSheet,
   emptyState,
   errorState,
   fmtDate,
@@ -409,6 +410,7 @@ function changePasswordBlock() {
     type: 'password',
     placeholder: 'Current password',
     autocomplete: 'current-password',
+    maxlength: '200',
     required: true,
   })
   const next = h('input', {
@@ -416,6 +418,8 @@ function changePasswordBlock() {
     type: 'password',
     placeholder: 'New password (8+ chars)',
     autocomplete: 'new-password',
+    minlength: '8',
+    maxlength: '200',
     required: true,
   })
   const save = h('button', { class: 'btn-ghost', type: 'submit' }, 'Update password')
@@ -520,7 +524,13 @@ async function enableNotifications(btn) {
 function messagesThread(g) {
   const wrap = h('div', { class: 'msg-wrap' })
   const list = h('div', { class: 'comments hidden' })
-  const input = h('input', { class: 'input', type: 'text', placeholder: 'Message…' })
+  const input = h('input', {
+    class: 'input',
+    type: 'text',
+    maxlength: '1000',
+    placeholder: 'Message…',
+  })
+  const sendBtn = h('button', { class: 'btn-ghost', type: 'submit' }, 'Send')
   const form = h(
     'form',
     {
@@ -529,17 +539,20 @@ function messagesThread(g) {
         e.preventDefault()
         const text = input.value.trim()
         if (!text) return
+        sendBtn.disabled = true
         try {
           await api.sendGigMessage(g.id, text)
           input.value = ''
           await loadThread()
         } catch (err) {
           toast(err instanceof ApiError ? err.message : 'Could not send', 'error')
+        } finally {
+          sendBtn.disabled = false
         }
       },
     },
     input,
-    h('button', { class: 'btn-ghost', type: 'submit' }, 'Send'),
+    sendBtn,
   )
 
   async function loadThread() {
@@ -587,6 +600,7 @@ function businessBlock(profile) {
   const name = h('input', {
     class: 'input',
     type: 'text',
+    maxlength: '80',
     placeholder: 'Business name (optional)',
   })
   if (profile.business_name) name.value = profile.business_name
@@ -630,6 +644,7 @@ function supportBlock() {
   const text = h('textarea', {
     class: 'input',
     rows: '2',
+    maxlength: '500',
     placeholder: 'Describe the problem — an admin will see this.',
   })
   const send = h('button', { class: 'btn-ghost', type: 'submit' }, 'Send to support')
@@ -886,6 +901,8 @@ function dangerBlock(root) {
     type: 'password',
     placeholder: 'Confirm password to delete',
     autocomplete: 'current-password',
+    maxlength: '200',
+    required: true,
   })
   const form = h(
     'form',
@@ -893,19 +910,21 @@ function dangerBlock(root) {
       class: 'form hidden',
       onSubmit: async (e) => {
         e.preventDefault()
-        if (
-          !confirm(
-            'Permanently close your account? Reviews stay on the ledger but your profile is removed and you are logged out.',
-          )
-        ) {
-          return
-        }
+        const sure = await confirmSheet('Permanently close your account?', {
+          body: 'Reviews stay on the ledger but your profile is removed and you are logged out everywhere.',
+          confirmLabel: 'Delete account',
+          danger: true,
+        })
+        if (!sure) return
+        const btn = form.querySelector('button[type="submit"]')
+        btn.disabled = true
         try {
           await api.deleteAccount(pw.value)
           toast('Account closed')
           if (onLoggedOut) onLoggedOut()
         } catch (err) {
           toast(err instanceof ApiError ? err.message : 'Could not close account', 'error')
+          btn.disabled = false
         }
       },
     },

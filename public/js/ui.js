@@ -48,19 +48,118 @@ export function toast(message, kind = 'info') {
   setTimeout(() => el.remove(), 3000)
 }
 
-// A bottom sheet / modal. Returns a close() fn. Tapping the backdrop closes it.
-// Sheets anchor to the bottom on phones (thumb zone); pass { center: true } for
-// content that should float centered instead (e.g. the photo viewer). On wide
-// screens CSS centers every sheet regardless.
-export function openSheet(contentNode, { center = false } = {}) {
-  const sheet = h('div', { class: 'sheet' }, contentNode)
+// A bottom sheet / modal. Returns a close() fn. Tapping the backdrop, the ×
+// button, or pressing Escape closes it. Sheets anchor to the bottom on phones
+// (thumb zone); pass { center: true } for content that should float centered
+// instead (e.g. the photo viewer). On wide screens CSS centers every sheet.
+export function openSheet(contentNode, { center = false, onClose = null } = {}) {
+  const closeBtn = h('button', { type: 'button', class: 'sheet-close', 'aria-label': 'Close' }, '×')
+  const sheet = h(
+    'div',
+    { class: 'sheet', role: 'dialog', 'aria-modal': 'true' },
+    closeBtn,
+    contentNode,
+  )
   const backdrop = h('div', { class: center ? 'backdrop backdrop-center' : 'backdrop' }, sheet)
-  const close = () => backdrop.remove()
+  const onKey = (e) => {
+    if (e.key !== 'Escape') return
+    // With stacked sheets (e.g. photo viewer over a profile), Escape should
+    // only dismiss the topmost one.
+    const open = document.querySelectorAll('.backdrop')
+    if (open[open.length - 1] === backdrop) close()
+  }
+  const close = () => {
+    document.removeEventListener('keydown', onKey)
+    backdrop.remove()
+    if (onClose) onClose()
+  }
+  closeBtn.addEventListener('click', close)
   backdrop.addEventListener('click', (e) => {
     if (e.target === backdrop) close()
   })
+  document.addEventListener('keydown', onKey)
   document.body.append(backdrop)
   return close
+}
+
+// A styled replacement for window.confirm(): title + optional body +
+// Cancel/confirm in a sheet. Resolves true only on explicit confirmation.
+export function confirmSheet(title, { body = '', confirmLabel = 'Confirm', danger = false } = {}) {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      close()
+      resolve(value)
+    }
+    const content = h(
+      'div',
+      { class: 'sheet-body form' },
+      h('h2', { class: 'screen-title' }, title),
+      body ? h('p', { class: 'hint' }, body) : null,
+      h(
+        'div',
+        { class: 'row' },
+        h('button', { type: 'button', class: 'btn-ghost', onClick: () => finish(false) }, 'Cancel'),
+        h(
+          'button',
+          {
+            type: 'button',
+            class: danger ? 'btn-primary btn-danger' : 'btn-primary',
+            onClick: () => finish(true),
+          },
+          confirmLabel,
+        ),
+      ),
+    )
+    const close = openSheet(content, { onClose: () => finish(false) })
+  })
+}
+
+// A styled replacement for window.prompt(): title + textarea + Cancel/submit in a
+// sheet. Resolves with the trimmed text, or null if cancelled/dismissed.
+export function promptSheet(
+  title,
+  { placeholder = '', maxlength = '500', submitLabel = 'Send' } = {},
+) {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      close()
+      resolve(value)
+    }
+    const text = h('textarea', {
+      class: 'input',
+      rows: '3',
+      maxlength,
+      placeholder,
+      required: true,
+    })
+    const form = h(
+      'form',
+      {
+        class: 'sheet-body form',
+        onSubmit: (e) => {
+          e.preventDefault()
+          const value = text.value.trim()
+          if (value) finish(value)
+        },
+      },
+      h('h2', { class: 'screen-title' }, title),
+      text,
+      h(
+        'div',
+        { class: 'row' },
+        h('button', { type: 'button', class: 'btn-ghost', onClick: () => finish(null) }, 'Cancel'),
+        h('button', { type: 'submit', class: 'btn-primary' }, submitLabel),
+      ),
+    )
+    const close = openSheet(form, { onClose: () => finish(null) })
+    text.focus()
+  })
 }
 
 export function spinner(label = 'Loading…') {
@@ -128,17 +227,15 @@ export function fmtDate(iso) {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-// Local-readable date+time for scheduled slots / windows.
+// Local-readable date+time for scheduled slots / windows. The year only
+// appears when it differs from the current one (keeps near dates compact).
 export function fmtDateTime(iso) {
   if (!iso) return ''
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
+  const opts = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric'
+  return d.toLocaleString(undefined, opts)
 }
 
 // <input type="datetime-local"> value (local time) → ISO string, or null.

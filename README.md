@@ -84,10 +84,19 @@ npm run setup
 1. installs dependencies,
 2. authenticates with Cloudflare,
 3. creates the D1 database `podnet` and writes its id into `wrangler.toml`,
-4. applies `schema.sql` to the remote database,
-5. creates the Pages project `podnet`,
-6. generates `SESSION_SECRET` and stores it as a Pages secret (only if not already set),
+4. applies `schema.sql` and then every file in `migrations/` to the remote database
+   (both are idempotent, so re-running is always safe),
+5. creates the R2 bucket `podnet-photos` and the Pages project `podnet`,
+6. generates `SESSION_SECRET` and the web-push (VAPID) keys and stores them as
+   Pages secrets (only if not already set),
 7. deploys the site and prints the live `*.pages.dev` URL.
+
+After the first deploy, register your account in the app, then grant yourself
+admin (the reports queue, business verification, and stats live behind it):
+
+```bash
+npx wrangler d1 execute podnet --remote --command "update users set is_admin=1 where email='you@example.com'"
+```
 
 ### Authentication
 

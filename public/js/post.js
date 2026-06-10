@@ -29,6 +29,8 @@ export function renderPostForm(root) {
     class: 'input',
     type: 'number',
     step: 'any',
+    min: '-90',
+    max: '90',
     placeholder: 'Latitude',
     value: seed ? String(seed.lat) : '',
   })
@@ -36,6 +38,8 @@ export function renderPostForm(root) {
     class: 'input',
     type: 'number',
     step: 'any',
+    min: '-180',
+    max: '180',
     placeholder: 'Longitude',
     value: seed ? String(seed.lng) : '',
   })
@@ -64,14 +68,18 @@ export function renderPostForm(root) {
   )
 
   const f = {
-    task_type: field('Task', 'text', 'e.g. Rake leaves', prefill?.task_type),
-    neighborhood: field('Neighborhood', 'text', 'e.g. Front St', prefill?.neighborhood),
+    task_type: field('Task', 'text', 'e.g. Rake leaves', prefill?.task_type, { maxlength: '80' }),
+    neighborhood: field('Neighborhood', 'text', 'e.g. Front St', prefill?.neighborhood, {
+      maxlength: '80',
+    }),
     cash_payout: field('Cash payout ($)', 'number', '40', prefill?.cash_payout, {
       min: '0',
+      max: '1000000',
       step: '1',
     }),
     est_hours: field('Estimated hours', 'number', '2', prefill?.est_hours, {
       min: '0.5',
+      max: '10000',
       step: '0.5',
     }),
   }
@@ -79,27 +87,36 @@ export function renderPostForm(root) {
   const description = h('textarea', {
     class: 'input',
     rows: '4',
+    maxlength: '2000',
     placeholder: 'What needs doing? Any details the worker should know.',
     required: true,
   })
   if (prefill?.description) description.value = prefill.description
 
   // Scheduling: hours that work for the hirer + minimum notice. The worker
-  // picks a slot inside this window when claiming.
+  // picks a slot inside this window when claiming. The pickers grey out the
+  // past, and the end picker follows the chosen start.
+  const nowLocal = isoToLocalInput(new Date().toISOString())
   const winStart = h('input', {
     class: 'input',
     type: 'datetime-local',
+    min: nowLocal,
     value: isoToLocalInput(prefill?.window_start),
   })
   const winEnd = h('input', {
     class: 'input',
     type: 'datetime-local',
+    min: isoToLocalInput(prefill?.window_start) || nowLocal,
     value: isoToLocalInput(prefill?.window_end),
+  })
+  winStart.addEventListener('change', () => {
+    winEnd.min = winStart.value || nowLocal
   })
   const noticeInput = h('input', {
     class: 'input',
     type: 'number',
     min: '0',
+    max: '720',
     step: '1',
     placeholder: '0',
   })
@@ -132,6 +149,20 @@ export function renderPostForm(root) {
           return
         }
         setCoords({ lat, lng }) // remember for Nearby + next post
+        // The window is optional but comes as a pair, end after start — the same
+        // rules as functions/lib/schedule.ts validateWindow, caught early here.
+        if (!!winStart.value !== !!winEnd.value) {
+          toast('Set both a start and an end for your window, or leave both empty', 'error')
+          return
+        }
+        if (winStart.value && winEnd.value <= winStart.value) {
+          toast('The window must end after it starts', 'error')
+          return
+        }
+        if (!winStart.value && noticeInput.value && Number(noticeInput.value) > 0) {
+          toast('Notice hours only apply when you set a time window', 'error')
+          return
+        }
         const gig = {
           task_type: f.task_type.input.value.trim(),
           neighborhood: f.neighborhood.input.value.trim(),
@@ -198,6 +229,7 @@ export function renderRatePanel(gig, onDone) {
   const note = h('textarea', {
     class: 'input',
     rows: '2',
+    maxlength: '1000',
     placeholder: 'Optional note for the review',
   })
   const payBtn = h('button', { class: 'btn-primary', disabled: true }, 'Close & pay')

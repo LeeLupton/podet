@@ -11,6 +11,7 @@
     "db:init": "wrangler d1 execute podnet --remote --file schema.sql",
     "db:init:local": "wrangler d1 execute podnet --local --file schema.sql",
     "db:backup": "wrangler d1 export podnet --remote --output podnet-backup.sql",
+    "icons": "node scripts/make-icons.mjs",
     "deploy": "wrangler pages deploy",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",

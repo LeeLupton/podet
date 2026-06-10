@@ -11,9 +11,11 @@ import {
   errorState,
   fmtDateTime,
   h,
+  isoToLocalInput,
   localInputToIso,
   money,
   openSheet,
+  promptSheet,
   spinner,
   toast,
 } from './ui.js'
@@ -120,6 +122,8 @@ function showLocationForm(message) {
     class: 'input',
     type: 'number',
     step: 'any',
+    min: '-90',
+    max: '90',
     placeholder: 'Latitude',
     value: coords ? String(coords.lat) : '',
   })
@@ -127,6 +131,8 @@ function showLocationForm(message) {
     class: 'input',
     type: 'number',
     step: 'any',
+    min: '-180',
+    max: '180',
     placeholder: 'Longitude',
     value: coords ? String(coords.lng) : '',
   })
@@ -219,14 +225,54 @@ function gigCard(g) {
 
 function openGig(g) {
   const windowed = !!(g.window_start && g.window_end)
-  const slotInput = windowed ? h('input', { class: 'input', type: 'datetime-local' }) : null
-  const claimBtn = h('button', { class: 'btn-primary', onClick: claim }, 'Claim')
+  // Mirror the server's slot rules (functions/lib/schedule.ts validateSlot) in the
+  // picker itself: min/max grey out days outside the window, and the notice
+  // period pushes min forward so too-soon times can't be picked either.
+  const noticeMs = (g.notice_hours || 0) * 3600_000
+  const earliestMs = windowed
+    ? Math.max(new Date(g.window_start).getTime(), Date.now() + noticeMs)
+    : 0
+  const latestMs = windowed ? new Date(g.window_end).getTime() : 0
+  const unmeetable = windowed && earliestMs > latestMs
+  const slotInput =
+    windowed && !unmeetable
+      ? h('input', {
+          class: 'input',
+          type: 'datetime-local',
+          required: true,
+          min: isoToLocalInput(new Date(earliestMs).toISOString()),
+          max: isoToLocalInput(new Date(latestMs).toISOString()),
+        })
+      : null
+  const claimBtn = h(
+    'button',
+    { class: 'btn-primary', onClick: claim, disabled: unmeetable },
+    unmeetable ? 'Window has passed' : 'Claim',
+  )
 
   async function claim() {
+    if (unmeetable) return
     const slot = windowed ? localInputToIso(slotInput.value) : null
     if (windowed && !slot) {
       toast('Pick a time within the posted window first', 'error')
       return
+    }
+    if (windowed) {
+      // Same checks the server runs — catch them here for an instant, clear message.
+      const t = new Date(slot).getTime()
+      if (t < new Date(g.window_start).getTime() || t > latestMs) {
+        slotInput.reportValidity()
+        toast('That time is outside the posted window', 'error')
+        return
+      }
+      if (t < earliestMs) {
+        slotInput.reportValidity()
+        toast(
+          `The hirer needs ${g.notice_hours}h notice — pick ${fmtDateTime(new Date(earliestMs).toISOString())} or later`,
+          'error',
+        )
+        return
+      }
     }
     claimBtn.disabled = true
     claimBtn.textContent = 'Claiming…'
@@ -277,7 +323,28 @@ function openGig(g) {
           `Works for the hirer: ${fmtDateTime(g.window_start)} – ${fmtDateTime(g.window_end)}${g.notice_hours ? ` · needs ${g.notice_hours}h notice` : ''}`,
         )
       : null,
-    windowed ? h('label', { class: 'lbl' }, h('span', {}, 'Pick your time'), slotInput) : null,
+    unmeetable
+      ? h(
+          'p',
+          { class: 'hint warn-text' },
+          'This window can no longer be met with the required notice.',
+        )
+      : null,
+    windowed && !unmeetable
+      ? h(
+          'label',
+          { class: 'lbl' },
+          h('span', {}, 'Pick your time'),
+          slotInput,
+          earliestMs > new Date(g.window_start).getTime()
+            ? h(
+                'span',
+                { class: 'hint' },
+                `Earliest you can pick: ${fmtDateTime(new Date(earliestMs).toISOString())}`,
+              )
+            : null,
+        )
+      : null,
     mapLink(g),
     claimBtn,
     h(
@@ -285,10 +352,13 @@ function openGig(g) {
       {
         class: 'link-btn danger',
         onClick: async () => {
-          const reason = prompt('Why are you reporting this gig?')
-          if (!reason || !reason.trim()) return
+          const reason = await promptSheet('Report this gig', {
+            placeholder: 'What’s wrong with it? An admin will review this.',
+            submitLabel: 'Report',
+          })
+          if (!reason) return
           try {
-            await api.report('gig', g.id, reason.trim())
+            await api.report('gig', g.id, reason)
             toast('Reported — an admin will review it')
           } catch (err) {
             toast(err instanceof ApiError ? err.message : 'Could not report', 'error')
