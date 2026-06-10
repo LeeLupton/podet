@@ -18,7 +18,7 @@ import { bboxDeltas, haversineMiles } from '../lib/geo'
 import { clampLimit, parseBefore } from '../lib/pagination'
 import { DUMMY_PASSWORD_HASH, hashPassword, verifyPassword } from '../lib/password'
 import { MAX_PHOTOS_PER_GIG, checkImageUpload, photoKey } from '../lib/photos'
-import { sendWebPush } from '../lib/push'
+import { type PushDeliveryOptions, sendWebPush, topicFor } from '../lib/push'
 import { rateLimitKey, windowStart } from '../lib/ratelimit'
 import { LIMITS, isValidLatLng, isValidRating, validateString } from '../lib/validate'
 
@@ -87,7 +87,12 @@ async function issueSession(c: any, userId: string): Promise<string> {
  * Web Push — best-effort fan-out to a user's subscriptions. Never throws to
  * the caller; prunes dead subscriptions on 404/410. No-op if VAPID is unset.
  * ------------------------------------------------------------------ */
-async function notifyUser(c: any, userId: string, payload: any): Promise<void> {
+async function notifyUser(
+  c: any,
+  userId: string,
+  payload: any,
+  delivery: PushDeliveryOptions = {},
+): Promise<void> {
   const pub = c.env.VAPID_PUBLIC_KEY
   const priv = c.env.VAPID_PRIVATE_KEY
   if (!pub || !priv) return
@@ -107,7 +112,7 @@ async function notifyUser(c: any, userId: string, payload: any): Promise<void> {
   await Promise.all(
     (subs.results as any[]).map(async (s) => {
       try {
-        const res = await sendWebPush(s, body, { publicKey: pub, privateJwk, subject })
+        const res = await sendWebPush(s, body, { publicKey: pub, privateJwk, subject }, delivery)
         if (res.status === 404 || res.status === 410) {
           await c.env.DB.prepare('delete from push_subscriptions where endpoint = ?')
             .bind(s.endpoint)
@@ -409,6 +414,27 @@ app.post('/gigs', async (c) => {
       from_post_id,
     )
     .run()
+  // Best-effort: if this gig grew out of a board post, tell the post author.
+  if (from_post_id) {
+    const origin: any = await c.env.DB.prepare('select author_id from posts where id = ?')
+      .bind(from_post_id)
+      .first()
+    if (origin && origin.author_id !== userId) {
+      fireAndForget(
+        c,
+        notifyUser(
+          c,
+          origin.author_id,
+          {
+            title: 'Your post became a gig',
+            body: `${task_type} — ${cash_payout} offered`,
+            url: '/',
+          },
+          { topic: topicFor(from_post_id), urgency: 'normal' },
+        ),
+      )
+    }
+  }
   return c.json({ id }, 201)
 })
 
@@ -432,11 +458,16 @@ app.post('/gigs/:id/claim', async (c) => {
   if (g) {
     fireAndForget(
       c,
-      notifyUser(c, g.posted_by, {
-        title: 'Your gig was claimed',
-        body: `${g.task_type} — someone is on it`,
-        url: '/',
-      }),
+      notifyUser(
+        c,
+        g.posted_by,
+        {
+          title: 'Your gig was claimed',
+          body: `${g.task_type} — someone is on it`,
+          url: '/',
+        },
+        { topic: topicFor(id), urgency: 'high' },
+      ),
     )
   }
   return c.json({ ok: true })
@@ -480,11 +511,16 @@ app.post('/gigs/:id/complete', async (c) => {
   // Best-effort: tell the worker they were paid and rated.
   fireAndForget(
     c,
-    notifyUser(c, gig.claimed_by, {
-      title: `You were rated ${rating}★`,
-      body: `${gig.task_type} — paid ${gig.cash_payout}`,
-      url: '/',
-    }),
+    notifyUser(
+      c,
+      gig.claimed_by,
+      {
+        title: `You were rated ${rating}★`,
+        body: `${gig.task_type} — paid ${gig.cash_payout}`,
+        url: '/',
+      },
+      { topic: topicFor(id), urgency: 'high' },
+    ),
   )
   return c.json({ ok: true })
 })
@@ -571,6 +607,25 @@ app.post('/gigs/:id/abandon', async (c) => {
     .run()
   if (res.meta.changes !== 1) {
     return c.json({ error: 'not your claimed gig' }, 403)
+  }
+  // Best-effort: tell the poster their gig is back on the market.
+  const g: any = await c.env.DB.prepare('select posted_by, task_type from gigs where id = ?')
+    .bind(id)
+    .first()
+  if (g) {
+    fireAndForget(
+      c,
+      notifyUser(
+        c,
+        g.posted_by,
+        {
+          title: 'Worker released your gig',
+          body: `${g.task_type} — it's available again`,
+          url: '/',
+        },
+        { topic: topicFor(id), urgency: 'high' },
+      ),
+    )
   }
   return c.json({ ok: true })
 })
@@ -794,7 +849,9 @@ app.post('/posts/:id/comments', async (c) => {
   if (!bodyCheck.ok || !bodyCheck.value)
     return c.json({ error: 'body required (within length limit)' }, 400)
   const body = bodyCheck.value
-  const post = await c.env.DB.prepare('select id from posts where id = ?').bind(postId).first()
+  const post: any = await c.env.DB.prepare('select id, author_id, body from posts where id = ?')
+    .bind(postId)
+    .first()
   if (!post) return c.json({ error: 'post not found' }, 404)
   const id = crypto.randomUUID()
   await c.env.DB.prepare(
@@ -802,6 +859,23 @@ app.post('/posts/:id/comments', async (c) => {
   )
     .bind(id, postId, userId, body)
     .run()
+  // Best-effort: tell the post author (not when commenting on your own post).
+  // Topic = post id, so a burst of comments collapses to one queued notification.
+  if (post.author_id !== userId) {
+    fireAndForget(
+      c,
+      notifyUser(
+        c,
+        post.author_id,
+        {
+          title: 'New comment on your post',
+          body: String(post.body).slice(0, 80),
+          url: '/',
+        },
+        { topic: topicFor(postId), urgency: 'normal' },
+      ),
+    )
+  }
   return c.json({ id }, 201)
 })
 
@@ -927,6 +1001,17 @@ app.post('/push/subscribe', async (c) => {
   const auth = b?.keys?.auth
   if (typeof endpoint !== 'string' || !p256dh || !auth) {
     return c.json({ error: 'endpoint and keys required' }, 400)
+  }
+  // Push service endpoints are always https; reject anything else so we never
+  // POST encrypted payloads to an arbitrary scheme/host of the client's choosing.
+  let endpointUrl: URL
+  try {
+    endpointUrl = new URL(endpoint)
+  } catch {
+    return c.json({ error: 'invalid endpoint' }, 400)
+  }
+  if (endpointUrl.protocol !== 'https:') {
+    return c.json({ error: 'endpoint must be https' }, 400)
   }
   await c.env.DB.prepare(
     `insert into push_subscriptions (endpoint, user_id, p256dh, auth) values (?, ?, ?, ?)

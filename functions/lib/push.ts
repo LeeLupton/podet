@@ -150,12 +150,50 @@ export async function encryptPayload(
   return { body: concatBytes(header, ciphertext), salt, asPublic }
 }
 
-// Full send: encrypt (if payload) + VAPID auth + POST. Returns the push service
-// Response so the caller can prune dead subscriptions on 404/410.
+// Delivery options understood by all push services (RFC 8030):
+//  - ttl: seconds the service may queue the message for an offline device.
+//  - urgency: very-low | low | normal | high — battery-aware delivery hint.
+//  - topic: collapse key (≤32 base64url chars); a newer message with the same
+//    topic replaces a queued older one instead of stacking up.
+export type PushDeliveryOptions = {
+  ttl?: number
+  urgency?: 'very-low' | 'low' | 'normal' | 'high'
+  topic?: string
+}
+
+const TOPIC_RE = /^[A-Za-z0-9_-]{1,32}$/
+const DEFAULT_TTL = 2419200 // 28 days
+
+// Collapse key for events about one entity: a UUID minus hyphens is 32 hex
+// chars — exactly the RFC 8030 Topic limit. Newer updates with the same topic
+// replace queued older ones instead of stacking up on the device.
+export function topicFor(id: string): string {
+  return id.replace(/-/g, '').slice(0, 32)
+}
+
+// Pure header builder so delivery semantics are unit-testable.
+export function pushHeaders(
+  authorization: string,
+  opts: PushDeliveryOptions = {},
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    TTL: String(Number.isFinite(opts.ttl) && (opts.ttl as number) >= 0 ? opts.ttl : DEFAULT_TTL),
+    'Content-Encoding': 'aes128gcm',
+    'Content-Type': 'application/octet-stream',
+    Authorization: authorization,
+    Urgency: opts.urgency ?? 'normal',
+  }
+  if (opts.topic && TOPIC_RE.test(opts.topic)) headers.Topic = opts.topic
+  return headers
+}
+
+// Full send: encrypt + VAPID auth + POST. Returns the push service Response so
+// the caller can prune dead subscriptions on 404/410.
 export async function sendWebPush(
   sub: { endpoint: string; p256dh: string; auth: string },
   payload: string,
   vapid: { publicKey: string; privateJwk: JsonWebKey; subject: string },
+  delivery: PushDeliveryOptions = {},
 ): Promise<Response> {
   const url = new URL(sub.endpoint)
   const jwt = await buildVapidJwt(url.origin, vapid.subject, vapid.privateJwk)
@@ -166,12 +204,7 @@ export async function sendWebPush(
   )
   return fetch(sub.endpoint, {
     method: 'POST',
-    headers: {
-      TTL: '2419200',
-      'Content-Encoding': 'aes128gcm',
-      'Content-Type': 'application/octet-stream',
-      Authorization: vapidAuthHeader(jwt, vapid.publicKey),
-    },
+    headers: pushHeaders(vapidAuthHeader(jwt, vapid.publicKey), delivery),
     body,
   })
 }
