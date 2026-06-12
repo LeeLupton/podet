@@ -53,13 +53,25 @@ create table if not exists gigs (
   created_at   text not null default (datetime('now'))
 );
 
+-- REVIEWS — two-sided and restorative. Both gig parties may review each other
+-- (worker_id/hirer_id are always the two parties; author_id/subject_id say who
+-- rated whom). 4-5 stars publish immediately; a 1-2 star review is HELD as
+-- RESOLVING — a private improvement conversation opens and the score stays
+-- unpublished until the author revises it up, withdraws it, or the 7-day
+-- deadline passes (auto-publish, so a held review can never be a silent veto).
+-- Reputation accrues only when a review reaches PUBLISHED.
 create table if not exists reviews (
   id         text primary key,
   gig_id     text not null references gigs(id),
-  worker_id  text not null references users(id),
-  hirer_id   text not null references users(id),
+  worker_id  text not null references users(id),    -- the gig's worker
+  hirer_id   text not null references users(id),     -- the gig's hirer
+  author_id  text references users(id),              -- who wrote the review
+  subject_id text references users(id),              -- who it is about
   stars      integer not null check (stars between 1 and 5),
   body       text,
+  status     text not null default 'PUBLISHED' check (status in ('PUBLISHED','RESOLVING')),
+  resolve_deadline text,                             -- when a held review auto-publishes
+  responded  integer not null default 0,             -- subject engaged in resolution?
   created_at text not null default (datetime('now'))
 );
 
@@ -111,6 +123,8 @@ create table if not exists rate_limits (
 create index if not exists idx_gigs_status   on gigs(status);
 create index if not exists idx_gigs_bbox     on gigs(lat, lng);
 create index if not exists idx_reviews_wkr   on reviews(worker_id);
+create index if not exists idx_reviews_subject   on reviews(subject_id, status);
+create index if not exists idx_reviews_resolving on reviews(status, resolve_deadline);
 create index if not exists idx_posts_time    on posts(created_at);
 create index if not exists idx_comments_post on post_comments(post_id);
 

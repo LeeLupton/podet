@@ -21,6 +21,7 @@ import { DUMMY_PASSWORD_HASH, hashPassword, verifyPassword } from '../lib/passwo
 import { MAX_PHOTOS_PER_GIG, checkImageUpload, photoKey } from '../lib/photos'
 import { type PushDeliveryOptions, isAllowedPushEndpoint, sendWebPush, topicFor } from '../lib/push'
 import { rateLimitKey, windowStart } from '../lib/ratelimit'
+import { REVIEW, planReview, planRevision } from '../lib/review'
 import { validateSlot } from '../lib/schedule'
 import { LIMITS, isValidRating, validateString } from '../lib/validate'
 
@@ -137,6 +138,39 @@ function fireAndForget(c: any, promise: Promise<unknown>): void {
     // no execution context (e.g. unit tests) — let it run detached
     void promise
   }
+}
+
+// Reputation accrues to the person a review is ABOUT, and only when the review
+// reaches PUBLISHED (never while it's held in resolution).
+function accrueRatingStmt(db: D1Database, subjectId: string, stars: number) {
+  return db
+    .prepare(
+      `update users set rating_sum = rating_sum + ?, rating_count = rating_count + 1 where id = ?`,
+    )
+    .bind(stars, subjectId)
+}
+
+// Pages has no cron, so held reviews publish lazily: any read path that surfaces
+// reputation sweeps RESOLVING reviews whose 7-day deadline has passed and
+// publishes them at their committed score (accruing the rating then). This is
+// the terminal state that stops a held review from being a silent veto.
+async function publishExpiredReviews(db: D1Database): Promise<void> {
+  const due = await db
+    .prepare(
+      `select id, subject_id, stars from reviews
+        where status = 'RESOLVING' and resolve_deadline is not null
+          and resolve_deadline <= ?`,
+    )
+    .bind(new Date().toISOString())
+    .all()
+  const rows = due.results as any[]
+  if (!rows.length) return
+  const stmts = []
+  for (const r of rows) {
+    stmts.push(db.prepare(`update reviews set status = 'PUBLISHED' where id = ?`).bind(r.id))
+    stmts.push(accrueRatingStmt(db, r.subject_id, r.stars))
+  }
+  await db.batch(stmts)
 }
 
 /* ------------------------------------------------------------------ *
@@ -654,30 +688,225 @@ app.post('/gigs/:id/complete', async (c) => {
     return c.json({ error: 'only the poster can complete this gig' }, 403)
   if (gig.status !== 'CLAIMED') return c.json({ error: 'gig is not in a claimed state' }, 409)
 
+  // Completion always pays/closes the gig and credits the worker's gig count;
+  // the review's visibility, though, follows the restorative state machine.
+  const plan = planReview(rating)
   const reviewId = crypto.randomUUID()
-  await c.env.DB.batch([
+  const stmts = [
     c.env.DB.prepare(`update gigs set status = 'COMPLETED' where id = ?`).bind(id),
     c.env.DB.prepare(
-      `insert into reviews (id, gig_id, worker_id, hirer_id, stars, body) values (?, ?, ?, ?, ?, ?)`,
-    ).bind(reviewId, id, gig.claimed_by, userId, rating, review),
-    c.env.DB.prepare(
-      `update users set total_gigs = total_gigs + 1, rating_sum = rating_sum + ?, rating_count = rating_count + 1 where id = ?`,
-    ).bind(rating, gig.claimed_by),
-  ])
-  // Best-effort: tell the worker they were paid and rated.
+      `insert into reviews (id, gig_id, worker_id, hirer_id, author_id, subject_id, stars, body, status, resolve_deadline)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      reviewId,
+      id,
+      gig.claimed_by,
+      userId,
+      userId,
+      gig.claimed_by,
+      rating,
+      review,
+      plan.status,
+      plan.resolve_deadline,
+    ),
+    c.env.DB.prepare(`update users set total_gigs = total_gigs + 1 where id = ?`).bind(
+      gig.claimed_by,
+    ),
+  ]
+  // Reputation only moves when the review is public; a held review accrues on
+  // resolution or at its deadline instead.
+  if (plan.status === 'PUBLISHED') stmts.push(accrueRatingStmt(c.env.DB, gig.claimed_by, rating))
+  await c.env.DB.batch(stmts)
+
   fireAndForget(
     c,
     notifyUser(
       c,
       gig.claimed_by,
-      {
-        title: `You were rated ${rating}★`,
-        body: `${gig.task_type} — paid ${gig.cash_payout}`,
-        url: '/',
-      },
+      plan.status === 'PUBLISHED'
+        ? {
+            title: `You were rated ${rating}★`,
+            body: `${gig.task_type} — paid ${gig.cash_payout}`,
+            url: '/',
+          }
+        : {
+            title: 'A review is open for discussion',
+            body: `${gig.task_type} — paid ${gig.cash_payout}. Tap to talk it through.`,
+            url: '/',
+          },
       { topic: topicFor(id), urgency: 'high' },
     ),
   )
+  return c.json({ ok: true, review_status: plan.status })
+})
+
+// The WORKER reviews the HIRER — the other half of two-sided accountability.
+// Allowed once the worker has marked the work done (so a hirer who ghosts
+// without paying can still be reviewed) or after the gig is completed. Same
+// restorative state machine as the hirer's review.
+app.post('/gigs/:id/review', async (c) => {
+  const userId = c.get('userId')
+  const id = c.req.param('id')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const rating = Number(b.rating)
+  const reviewCheck = validateString(b.review, LIMITS.review_body, { required: false })
+  if (!reviewCheck.ok) return c.json({ error: 'review too long' }, 400)
+  if (!isValidRating(rating)) return c.json({ error: 'rating must be an integer 1-5' }, 400)
+
+  const gig: any = await c.env.DB.prepare('select * from gigs where id = ?').bind(id).first()
+  if (!gig) return c.json({ error: 'not found' }, 404)
+  if (gig.claimed_by !== userId)
+    return c.json({ error: 'only the worker can review the hirer' }, 403)
+  if (!gig.done_at && gig.status !== 'COMPLETED') {
+    return c.json({ error: 'review the hirer after marking the work done' }, 409)
+  }
+  const existing = await c.env.DB.prepare(
+    `select 1 from reviews where gig_id = ? and author_id = ?`,
+  )
+    .bind(id, userId)
+    .first()
+  if (existing) return c.json({ error: 'you already reviewed this gig' }, 409)
+
+  const plan = planReview(rating)
+  const reviewId = crypto.randomUUID()
+  const stmts = [
+    c.env.DB.prepare(
+      `insert into reviews (id, gig_id, worker_id, hirer_id, author_id, subject_id, stars, body, status, resolve_deadline)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      reviewId,
+      id,
+      gig.claimed_by,
+      gig.posted_by,
+      userId,
+      gig.posted_by,
+      rating,
+      reviewCheck.value,
+      plan.status,
+      plan.resolve_deadline,
+    ),
+  ]
+  if (plan.status === 'PUBLISHED') stmts.push(accrueRatingStmt(c.env.DB, gig.posted_by, rating))
+  await c.env.DB.batch(stmts)
+
+  fireAndForget(
+    c,
+    notifyUser(
+      c,
+      gig.posted_by,
+      plan.status === 'PUBLISHED'
+        ? { title: `A worker rated you ${rating}★`, body: gig.task_type, url: '/' }
+        : {
+            title: 'A review is open for discussion',
+            body: `${gig.task_type} — tap to talk it through.`,
+            url: '/',
+          },
+      { topic: topicFor(id), urgency: 'normal' },
+    ),
+  )
+  return c.json({ ok: true, review_status: plan.status }, 201)
+})
+
+// Resolution surfaces for the signed-in user:
+//  - authored: my held reviews, each with the counterpart's review IF it's 4-5
+//    (the empathy nudge — "they thought well of you, sure you want to go low?").
+//  - about_me: held reviews about me — the written feedback to act on, but NOT
+//    the star number (resolution is about the substance, not the score).
+app.get('/reviews/resolving', async (c) => {
+  const userId = c.get('userId')
+  await publishExpiredReviews(c.env.DB)
+  const authoredRes = await c.env.DB.prepare(
+    `select r.id, r.gig_id, r.subject_id, r.stars, r.body, r.responded, r.resolve_deadline,
+            g.task_type, su.display_name as subject_name
+       from reviews r join gigs g on g.id = r.gig_id
+       join users su on su.id = r.subject_id
+      where r.author_id = ? and r.status = 'RESOLVING'
+      order by r.created_at desc`,
+  )
+    .bind(userId)
+    .all()
+  const authored = authoredRes.results as any[]
+  for (const r of authored) {
+    const counter: any = await c.env.DB.prepare(
+      `select stars, body from reviews where gig_id = ? and author_id = ? and stars >= 4`,
+    )
+      .bind(r.gig_id, r.subject_id)
+      .first()
+    r.counterpart = counter ? { stars: counter.stars, body: counter.body } : null
+  }
+  const aboutRes = await c.env.DB.prepare(
+    `select r.id, r.gig_id, r.body, r.resolve_deadline,
+            g.task_type, au.display_name as author_name
+       from reviews r join gigs g on g.id = r.gig_id
+       join users au on au.id = r.author_id
+      where r.subject_id = ? and r.status = 'RESOLVING'
+      order by r.created_at desc`,
+  )
+    .bind(userId)
+    .all()
+  return c.json({ authored, about_me: aboutRes.results })
+})
+
+// Author raises a held review (ceiling-of-harm: up only). If it clears the hold
+// threshold it publishes and accrues; otherwise it stays in resolution.
+app.post('/reviews/:id/revise', async (c) => {
+  const userId = c.get('userId')
+  const id = c.req.param('id')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const review: any = await c.env.DB.prepare(
+    `select id, author_id, subject_id, stars, status from reviews where id = ?`,
+  )
+    .bind(id)
+    .first()
+  if (!review || review.author_id !== userId) return c.json({ error: 'not found' }, 404)
+  if (review.status !== 'RESOLVING') return c.json({ error: 'review is not in resolution' }, 409)
+  const plan = planRevision(review.stars, Number(b.rating))
+  if (!plan.ok) return c.json({ error: plan.reason }, 400)
+  const stmts = [
+    c.env.DB.prepare(`update reviews set stars = ?, status = ? where id = ?`).bind(
+      plan.stars,
+      plan.status,
+      id,
+    ),
+  ]
+  if (plan.status === 'PUBLISHED')
+    stmts.push(accrueRatingStmt(c.env.DB, review.subject_id, plan.stars))
+  await c.env.DB.batch(stmts)
+  return c.json({ ok: true, review_status: plan.status })
+})
+
+// Author withdraws a held review entirely (no score, nothing published).
+app.post('/reviews/:id/withdraw', async (c) => {
+  const userId = c.get('userId')
+  const res = await c.env.DB.prepare(
+    `delete from reviews where id = ? and author_id = ? and status = 'RESOLVING'`,
+  )
+    .bind(c.req.param('id'), userId)
+    .run()
+  if (res.meta.changes < 1) return c.json({ error: 'not found or not in resolution' }, 404)
+  return c.json({ ok: true })
+})
+
+// Subject acknowledges a held review — records that they engaged (so a review
+// that auto-publishes unanswered is distinguishable from one that was discussed).
+app.post('/reviews/:id/acknowledge', async (c) => {
+  const userId = c.get('userId')
+  const res = await c.env.DB.prepare(
+    `update reviews set responded = 1 where id = ? and subject_id = ? and status = 'RESOLVING'`,
+  )
+    .bind(c.req.param('id'), userId)
+    .run()
+  if (res.meta.changes < 1) return c.json({ error: 'not found or not in resolution' }, 404)
   return c.json({ ok: true })
 })
 
@@ -1264,8 +1493,10 @@ app.delete('/posts/:id/interest', async (c) => {
 app.get('/users/:id', async (c) => {
   const targetId = c.req.param('id')
   const callerId = c.get('userId')
-  // One D1 batch (single round trip): profile row, hirer counts, block both ways.
-  const [userRes, hirerRes, iBlockedRes, blockedMeRes] = await c.env.DB.batch([
+  await publishExpiredReviews(c.env.DB)
+  // One D1 batch (single round trip): profile row, hirer counts, distinct
+  // counterparties (the hard-to-fake skill signal), block both ways.
+  const [userRes, hirerRes, distinctRes, iBlockedRes, blockedMeRes] = await c.env.DB.batch([
     c.env.DB.prepare(
       `select id, display_name, total_gigs, rating_sum, rating_count, business_name, verified, deleted, created_at from users where id = ?`,
     ).bind(targetId),
@@ -1273,6 +1504,10 @@ app.get('/users/:id', async (c) => {
       `select count(*) as posted,
                 sum(case when status = 'COMPLETED' then 1 else 0 end) as paid
            from gigs where posted_by = ?`,
+    ).bind(targetId),
+    c.env.DB.prepare(
+      `select count(distinct author_id) as neighbors
+         from reviews where subject_id = ? and status = 'PUBLISHED'`,
     ).bind(targetId),
     c.env.DB.prepare('select 1 from blocks where blocker_id = ? and blocked_id = ?').bind(
       callerId,
@@ -1295,6 +1530,7 @@ app.get('/users/:id', async (c) => {
   // Hirer-side accountability: how many gigs they've posted and paid out, so a
   // worker can judge a hirer before claiming (total_gigs is worker-side only).
   const hirer: any = (hirerRes.results as any[])[0]
+  const distinct: any = (distinctRes.results as any[])[0]
   const blocked = (iBlockedRes.results as any[]).length > 0
   return c.json({
     id: user.id,
@@ -1302,6 +1538,7 @@ app.get('/users/:id', async (c) => {
     total_gigs: user.total_gigs,
     rating_count: user.rating_count,
     average_rating: average,
+    distinct_counterparties: distinct?.neighbors ?? 0,
     business_name: user.business_name,
     verified: user.verified,
     gigs_posted: hirer?.posted ?? 0,
@@ -1369,14 +1606,19 @@ app.get('/me/blocks', async (c) => {
 app.get('/users/:id/reviews', async (c) => {
   const limit = clampLimit(c.req.query('limit'))
   const before = parseBefore(c.req.query('before'))
+  await publishExpiredReviews(c.env.DB)
+  // Reviews ABOUT this user that are public — both the work they did (as worker)
+  // and how they treated workers (as hirer). hirer_name is kept for back-compat;
+  // author_name is the actual reviewer in either direction.
   const rows = await c.env.DB.prepare(
     `select r.id, r.gig_id, r.stars, r.body, r.created_at,
             g.task_type, g.neighborhood,
-            hu.display_name as hirer_name
+            au.display_name as hirer_name,
+            au.display_name as author_name
        from reviews r
        join gigs g on g.id = r.gig_id
-       join users hu on hu.id = r.hirer_id
-      where r.worker_id = ? and (? is null or r.created_at < ?)
+       join users au on au.id = r.author_id
+      where r.subject_id = ? and r.status = 'PUBLISHED' and (? is null or r.created_at < ?)
       order by r.created_at desc
       limit ?`,
   )
