@@ -213,7 +213,12 @@ function gigCard(g) {
   return h(
     'button',
     { class: 'card gig-card', onClick: () => openGig(g) },
-    h('div', { class: 'payout' }, money(g.cash_payout)),
+    h(
+      'div',
+      { class: 'gig-row-top' },
+      h('div', { class: 'payout' }, money(g.cash_payout)),
+      g.neighbor ? h('span', { class: 'pill pill-neighbor' }, 'neighbor') : null,
+    ),
     h('div', { class: 'gig-title' }, g.task_type),
     h(
       'div',
@@ -300,8 +305,14 @@ function openGig(g) {
   const content = h(
     'div',
     { class: 'sheet-body' },
-    h('div', { class: 'payout payout-lg' }, money(g.cash_payout)),
+    h(
+      'div',
+      { class: 'gig-row-top' },
+      h('div', { class: 'payout payout-lg' }, money(g.cash_payout)),
+      g.neighbor ? h('span', { class: 'pill pill-neighbor' }, 'neighbor') : null,
+    ),
     h('h2', { class: 'gig-title' }, g.task_type),
+    g.neighbor ? h('div', { class: 'gig-meta sched' }, 'Next to a property you manage') : null,
     h(
       'div',
       { class: 'gig-meta' },

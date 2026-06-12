@@ -4,7 +4,8 @@
 
 import { ApiError, api } from './api.js'
 import { getUser, logout } from './auth.js'
-import { renderRatePanel } from './post.js'
+import { requestGeolocation } from './location.js'
+import { renderRatePanel, renderReviewPanel } from './post.js'
 import {
   clear,
   confirmSheet,
@@ -20,6 +21,12 @@ import {
   starsText,
   toast,
 } from './ui.js'
+import { markThreadRead, refreshUnread, unreadThreads } from './unread.js'
+
+// A small "N new" marker for an unread thread (or null when there's nothing new).
+function unreadDot(n) {
+  return n > 0 ? h('span', { class: 'unread-dot' }, n > 9 ? '9+' : String(n)) : null
+}
 
 // main.js sets these so logout returns to the gate and "Edit" opens the gig form.
 let onLoggedOut = null
@@ -45,18 +52,24 @@ async function load(root) {
     return
   }
   try {
-    const [pub, self, reviews, mine] = await Promise.all([
+    const [pub, self, reviews, mine, resolving] = await Promise.all([
       api.user(me.id),
       api.me(),
       api.userReviews(me.id),
       api.myGigs(),
+      api.resolvingReviews(),
+      refreshUnread(), // refresh the per-thread unread snapshot before drawing markers
     ])
     const profile = { ...pub, ...self, average_rating: pub.average_rating }
     clear(root)
     root.append(headerBlock(me, profile))
+    const resolution = resolutionBlock(resolving, root)
+    if (resolution) root.append(resolution)
     root.append(moneyBlock(mine))
     root.append(notificationsBlock())
     root.append(businessBlock(profile))
+    root.append(propertiesBlock())
+    root.append(neighborsBlock())
     root.append(changePasswordBlock())
     root.append(gigsBlock(mine, root))
     root.append(reviewsBlock(reviews, me.id))
@@ -100,6 +113,21 @@ function statsRow(avg, profile) {
         : 'no reviews yet',
     ),
     stat(String(profile.total_gigs), profile.total_gigs === 1 ? 'gig done' : 'gigs done'),
+    // Distinct reviewers — the hard-to-fake skill signal (sock puppets can't pad
+    // it). Labeled "people" so it doesn't collide with the geographic neighbor tag.
+    profile.distinct_counterparties
+      ? stat(
+          String(profile.distinct_counterparties),
+          profile.distinct_counterparties === 1 ? 'person' : 'people',
+        )
+      : null,
+    // Network density: other landscapers whose routes touch theirs.
+    profile.neighbor_count
+      ? stat(
+          String(profile.neighbor_count),
+          profile.neighbor_count === 1 ? 'neighbor' : 'neighbors',
+        )
+      : null,
   )
 }
 
@@ -144,6 +172,197 @@ function gigsBlock(mine, root) {
 
 function statusPill(status) {
   return h('span', { class: `pill pill-${status.toLowerCase()}` }, status.toLowerCase())
+}
+
+// Held reviews awaiting resolution — both the ones I wrote (which I can raise or
+// withdraw) and the ones about me (feedback to act on). Returns null when there's
+// nothing pending, so the section only appears when it's relevant.
+function resolutionBlock(resolving, root) {
+  const authored = resolving?.authored || []
+  const aboutMe = resolving?.about_me || []
+  if (!authored.length && !aboutMe.length) return null
+  const wrap = h(
+    'div',
+    { class: 'me-section' },
+    h('h2', { class: 'section-title' }, 'Reviews in resolution'),
+    h(
+      'p',
+      { class: 'hint' },
+      'Low ratings stay private while you talk it through. Raise or withdraw yours; held reviews publish on their own after 7 days.',
+    ),
+  )
+
+  for (const r of aboutMe) {
+    wrap.append(
+      h(
+        'div',
+        { class: 'card gig-row' },
+        h('div', { class: 'gig-title' }, `${r.author_name} left feedback`),
+        h('div', { class: 'gig-meta' }, r.task_type),
+        h('p', { class: 'review-body' }, r.body || 'No note left.'),
+        h(
+          'p',
+          { class: 'hint' },
+          `Auto-publishes ${fmtDateTime(r.resolve_deadline)} if unresolved.`,
+        ),
+        reviewThread(r.id),
+      ),
+    )
+  }
+
+  for (const r of authored) {
+    const card = h(
+      'div',
+      { class: 'card gig-row' },
+      h('div', { class: 'gig-title' }, `Your held review of ${r.subject_name}`),
+      h('div', { class: 'gig-meta' }, `${r.task_type} · you rated ${r.stars}★ (held)`),
+      r.body ? h('p', { class: 'review-body' }, r.body) : null,
+    )
+    if (r.counterpart) {
+      card.append(
+        h(
+          'p',
+          { class: 'hint' },
+          `They rated you ${r.counterpart.stars}★${r.counterpart.body ? `: “${r.counterpart.body}”` : ''} — still want to hold this?`,
+        ),
+      )
+    }
+    card.append(
+      h(
+        'p',
+        { class: 'hint' },
+        `Auto-publishes ${fmtDateTime(r.resolve_deadline)}.${r.responded ? ' They’ve responded.' : ''}`,
+      ),
+    )
+    const actions = h('div', { class: 'post-actions' })
+    for (let n = r.stars + 1; n <= 5; n++) {
+      actions.append(
+        h(
+          'button',
+          {
+            class: 'btn-ghost',
+            onClick: async () => {
+              try {
+                const res = await api.reviseReview(r.id, n)
+                toast(
+                  res.review_status === 'PUBLISHED'
+                    ? `Raised to ${n}★ — published`
+                    : `Raised to ${n}★`,
+                )
+                renderProfile(root)
+              } catch (err) {
+                toast(err instanceof ApiError ? err.message : 'Could not revise', 'error')
+              }
+            },
+          },
+          `Raise to ${n}★`,
+        ),
+      )
+    }
+    actions.append(
+      h(
+        'button',
+        {
+          class: 'btn-ghost danger',
+          onClick: async () => {
+            try {
+              await api.withdrawReview(r.id)
+              toast('Review withdrawn')
+              renderProfile(root)
+            } catch (err) {
+              toast(err instanceof ApiError ? err.message : 'Could not withdraw', 'error')
+            }
+          },
+        },
+        'Withdraw',
+      ),
+    )
+    card.append(actions)
+    card.append(reviewThread(r.id))
+    wrap.append(card)
+  }
+  return wrap
+}
+
+// The resolution conversation for one held review — a self-contained, collapsible
+// thread. Loads lazily on open; the subject simply replying records engagement.
+function reviewThread(reviewId) {
+  const wrap = h('div', { class: 'msg-wrap' })
+  const list = h('div', { class: 'comments hidden' })
+  const input = h('input', {
+    class: 'input',
+    type: 'text',
+    maxlength: '1000',
+    placeholder: 'Talk it through…',
+  })
+  const sendBtn = h('button', { class: 'btn-ghost', type: 'submit' }, 'Send')
+  const form = h(
+    'form',
+    {
+      class: 'comment-form hidden',
+      onSubmit: async (e) => {
+        e.preventDefault()
+        const text = input.value.trim()
+        if (!text) return
+        sendBtn.disabled = true
+        try {
+          await api.sendReviewMessage(reviewId, text)
+          input.value = ''
+          await loadThread()
+        } catch (err) {
+          toast(err instanceof ApiError ? err.message : 'Could not send', 'error')
+        } finally {
+          sendBtn.disabled = false
+        }
+      },
+    },
+    input,
+    sendBtn,
+  )
+
+  async function loadThread() {
+    try {
+      const msgs = await api.reviewMessages(reviewId)
+      clear(list)
+      if (!msgs.length)
+        list.append(h('div', { class: 'gig-meta' }, 'No messages yet — open the conversation.'))
+      for (const m of msgs) {
+        list.append(
+          h(
+            'div',
+            { class: 'comment' },
+            h('span', { class: 'comment-author' }, m.sender_name || 'Someone'),
+            h('span', { class: 'comment-body' }, m.body),
+            h('span', { class: 'comment-date' }, fmtDate(m.created_at)),
+          ),
+        )
+      }
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Could not load the conversation', 'error')
+    }
+  }
+
+  const dot = unreadDot(unreadThreads().review?.[reviewId] ?? 0)
+  const toggle = h(
+    'button',
+    {
+      class: 'btn-ghost',
+      onClick: async () => {
+        const closing = !list.classList.contains('hidden')
+        list.classList.toggle('hidden', closing)
+        form.classList.toggle('hidden', closing)
+        toggle.textContent = closing ? 'Open conversation' : 'Hide conversation'
+        if (dot) dot.remove()
+        if (!closing) {
+          await loadThread()
+          markThreadRead('review', reviewId)
+        }
+      },
+    },
+    'Open conversation',
+  )
+  wrap.append(h('div', { class: 'thread-head' }, toggle, dot), list, form)
+  return wrap
 }
 
 function postedGigCard(g, root) {
@@ -282,6 +501,11 @@ function claimedGigCard(g, root) {
     )
     card.append(actions)
   }
+  // Once the work is done (or the gig is closed), the worker reviews the hirer —
+  // the other half of accountability. Hidden once they've already reviewed.
+  if ((g.done_at || g.status === 'COMPLETED') && !g.reviewed_by_me) {
+    card.append(renderReviewPanel(g, () => renderProfile(root)))
+  }
   return card
 }
 
@@ -368,9 +592,14 @@ export async function openUserProfile(userId) {
     const avg = profile.average_rating != null ? profile.average_rating.toFixed(2) : '—'
     body.append(
       h(
-        'h2',
-        { class: 'me-name' },
-        (profile.display_name || 'Neighbor') + (profile.verified ? ' ✓' : ''),
+        'div',
+        { class: 'gig-row-top' },
+        h(
+          'h2',
+          { class: 'me-name' },
+          (profile.display_name || 'Neighbor') + (profile.verified ? ' ✓' : ''),
+        ),
+        profile.neighbor ? h('span', { class: 'pill pill-neighbor' }, 'neighbor') : null,
       ),
       profile.business_name
         ? h(
@@ -577,6 +806,7 @@ function messagesThread(g) {
   }
 
   const label = g.message_count > 0 ? `Messages (${g.message_count})` : 'Messages'
+  const dot = unreadDot(unreadThreads().gig?.[g.id] ?? 0)
   const toggle = h(
     'button',
     {
@@ -585,12 +815,16 @@ function messagesThread(g) {
         const open = list.classList.toggle('hidden')
         form.classList.toggle('hidden', open)
         toggle.textContent = open ? label : 'Hide messages'
-        if (!open) await loadThread()
+        if (dot) dot.remove()
+        if (!open) {
+          await loadThread()
+          markThreadRead('gig', g.id)
+        }
       },
     },
     label,
   )
-  wrap.append(toggle, list, form)
+  wrap.append(h('div', { class: 'thread-head' }, toggle, dot), list, form)
   return wrap
 }
 
@@ -631,6 +865,335 @@ function businessBlock(profile) {
     name,
     save,
   )
+}
+
+/* --- Properties (power the "neighbor" tag) --- */
+
+function propertiesBlock() {
+  const wrap = h(
+    'div',
+    { class: 'me-section' },
+    h('h2', { class: 'section-title' }, 'Properties'),
+    h(
+      'p',
+      { class: 'hint' },
+      'Add the properties on your route. Other landscapers whose routes touch yours show up as neighbors — so you can coordinate, hand off, or cover each other. Locations stay private; only the neighbor count is ever shared.',
+    ),
+  )
+  const list = h('div', { class: 'list' })
+  wrap.append(list)
+
+  async function loadList() {
+    try {
+      const props = await api.properties()
+      clear(list)
+      if (!props.length) {
+        list.append(h('div', { class: 'gig-meta' }, 'No properties yet.'))
+        return
+      }
+      for (const p of props) {
+        list.append(
+          h(
+            'div',
+            { class: 'card gig-row-top' },
+            h('span', {}, p.label),
+            h(
+              'button',
+              {
+                class: 'link-btn danger',
+                onClick: async () => {
+                  try {
+                    await api.deleteProperty(p.id)
+                    loadList()
+                  } catch (err) {
+                    toast(err instanceof ApiError ? err.message : 'Could not remove', 'error')
+                  }
+                },
+              },
+              'remove',
+            ),
+          ),
+        )
+      }
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Could not load properties', 'error')
+    }
+  }
+
+  const label = h('input', {
+    class: 'input',
+    type: 'text',
+    maxlength: '120',
+    placeholder: 'Label — e.g. 12 Oak St',
+  })
+  const lat = h('input', {
+    class: 'input',
+    type: 'number',
+    step: 'any',
+    min: '-90',
+    max: '90',
+    placeholder: 'Latitude',
+  })
+  const lng = h('input', {
+    class: 'input',
+    type: 'number',
+    step: 'any',
+    min: '-180',
+    max: '180',
+    placeholder: 'Longitude',
+  })
+  const locBtn = h(
+    'button',
+    {
+      type: 'button',
+      class: 'btn-ghost',
+      onClick: async () => {
+        locBtn.textContent = 'Locating…'
+        locBtn.disabled = true
+        try {
+          const c = await requestGeolocation()
+          lat.value = String(c.lat)
+          lng.value = String(c.lng)
+        } catch (err) {
+          toast(err.message, 'error')
+        } finally {
+          locBtn.textContent = 'Use my location'
+          locBtn.disabled = false
+        }
+      },
+    },
+    'Use my location',
+  )
+  const add = h('button', { class: 'btn-ghost', type: 'submit' }, 'Add property')
+  const form = h(
+    'form',
+    {
+      class: 'form',
+      onSubmit: async (e) => {
+        e.preventDefault()
+        const la = Number(lat.value)
+        const ln = Number(lng.value)
+        if (!label.value.trim()) return toast('Give the property a label', 'error')
+        if (
+          !Number.isFinite(la) ||
+          !Number.isFinite(ln) ||
+          la < -90 ||
+          la > 90 ||
+          ln < -180 ||
+          ln > 180
+        ) {
+          return toast('Set a valid location', 'error')
+        }
+        add.disabled = true
+        try {
+          await api.addProperty(label.value.trim(), la, ln)
+          label.value = ''
+          lat.value = ''
+          lng.value = ''
+          loadList()
+        } catch (err) {
+          toast(err instanceof ApiError ? err.message : 'Could not add property', 'error')
+        } finally {
+          add.disabled = false
+        }
+      },
+    },
+    label,
+    h('div', { class: 'loc-fields' }, locBtn, h('div', { class: 'row' }, lat, lng)),
+    add,
+  )
+  wrap.append(form)
+  loadList()
+  return wrap
+}
+
+/* --- Neighbors & connections --- */
+
+// A direct-message thread with a connected user, in a sheet.
+function openDmThread(userId, name) {
+  const body = h('div', { class: 'sheet-body' }, h('h2', { class: 'me-name' }, `Message ${name}`))
+  const list = h('div', { class: 'comments' })
+  const input = h('input', {
+    class: 'input',
+    type: 'text',
+    maxlength: '1000',
+    placeholder: 'Message…',
+  })
+  const sendBtn = h('button', { class: 'btn-ghost', type: 'submit' }, 'Send')
+  const form = h(
+    'form',
+    {
+      class: 'comment-form',
+      onSubmit: async (e) => {
+        e.preventDefault()
+        const text = input.value.trim()
+        if (!text) return
+        sendBtn.disabled = true
+        try {
+          await api.sendDm(userId, text)
+          input.value = ''
+          await loadDms()
+        } catch (err) {
+          toast(err instanceof ApiError ? err.message : 'Could not send', 'error')
+        } finally {
+          sendBtn.disabled = false
+        }
+      },
+    },
+    input,
+    sendBtn,
+  )
+  async function loadDms() {
+    try {
+      const msgs = await api.dms(userId)
+      clear(list)
+      if (!msgs.length) list.append(h('div', { class: 'gig-meta' }, 'No messages yet.'))
+      for (const m of msgs) {
+        list.append(
+          h(
+            'div',
+            { class: 'comment' },
+            h('span', { class: 'comment-author' }, m.sender_name || 'Someone'),
+            h('span', { class: 'comment-body' }, m.body),
+            h('span', { class: 'comment-date' }, fmtDate(m.created_at)),
+          ),
+        )
+      }
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Could not load messages', 'error')
+    }
+  }
+  body.append(list, form)
+  openSheet(body)
+  loadDms()
+  markThreadRead('dm', userId)
+}
+
+function neighborsBlock() {
+  const wrap = h(
+    'div',
+    { class: 'me-section' },
+    h('h2', { class: 'section-title' }, 'Neighbors & connections'),
+    h(
+      'p',
+      { class: 'hint' },
+      'Landscapers whose routes touch yours. Connect to coordinate, hand off, or cover each other.',
+    ),
+  )
+  const requestsWrap = h('div', { class: 'list' })
+  const nearWrap = h('div', { class: 'list' })
+  const connectedWrap = h('div', { class: 'list' })
+
+  function row(u, ...controls) {
+    return h(
+      'div',
+      { class: 'card gig-row-top' },
+      nameLink(u.display_name || 'Neighbor', u.id, u.verified),
+      h('div', { class: 'post-actions' }, ...controls),
+    )
+  }
+  function btn(label, cls, onClick) {
+    return h('button', { class: cls, onClick }, label)
+  }
+
+  async function reload() {
+    try {
+      const [neighbors, conns] = await Promise.all([api.neighbors(), api.connections()])
+      clear(requestsWrap)
+      clear(nearWrap)
+      clear(connectedWrap)
+
+      // Incoming requests waiting on you.
+      if (conns.incoming.length) {
+        requestsWrap.append(h('h3', { class: 'subhead' }, 'Requests'))
+        for (const u of conns.incoming) {
+          requestsWrap.append(
+            row(
+              u,
+              btn('Accept', 'btn-ghost on', async () => {
+                try {
+                  await api.acceptConnect(u.id)
+                  toast('Connected')
+                  reload()
+                } catch (err) {
+                  toast(err instanceof ApiError ? err.message : 'Could not accept', 'error')
+                }
+              }),
+              btn('Decline', 'link-btn danger', async () => {
+                await api.disconnect(u.id).catch(() => {})
+                reload()
+              }),
+            ),
+          )
+        }
+      }
+
+      // Discovery: neighbors you're not yet connected to.
+      const toShow = neighbors.filter(
+        (n) => n.connection === 'none' || n.connection === 'pending_out',
+      )
+      if (toShow.length) {
+        nearWrap.append(h('h3', { class: 'subhead' }, 'Near your route'))
+        for (const n of toShow) {
+          const control =
+            n.connection === 'pending_out'
+              ? btn('Requested', 'link-btn', async () => {
+                  await api.disconnect(n.id).catch(() => {})
+                  reload()
+                })
+              : btn('Connect', 'btn-ghost', async () => {
+                  try {
+                    await api.connect(n.id)
+                    toast('Request sent')
+                    reload()
+                  } catch (err) {
+                    toast(err instanceof ApiError ? err.message : 'Could not connect', 'error')
+                  }
+                })
+          nearWrap.append(row(n, control))
+        }
+      }
+
+      // Established connections — the messaging hub.
+      if (conns.connected.length) {
+        connectedWrap.append(h('h3', { class: 'subhead' }, 'Connected'))
+        for (const u of conns.connected) {
+          const newCount = unreadThreads().dm?.[u.id] ?? 0
+          const msgBtn = btn(
+            newCount ? `Message · ${newCount > 9 ? '9+' : newCount} new` : 'Message',
+            newCount ? 'btn-ghost on' : 'btn-ghost',
+            () => openDmThread(u.id, u.display_name || 'Neighbor'),
+          )
+          connectedWrap.append(
+            row(
+              u,
+              msgBtn,
+              btn('Disconnect', 'link-btn danger', async () => {
+                await api.disconnect(u.id).catch(() => {})
+                reload()
+              }),
+            ),
+          )
+        }
+      }
+
+      if (!conns.incoming.length && !toShow.length && !conns.connected.length) {
+        nearWrap.append(
+          emptyState(
+            'No neighbors yet — add the properties on your route to find landscapers nearby.',
+          ),
+        )
+      }
+    } catch (err) {
+      nearWrap.append(
+        errorState(err instanceof ApiError ? err.message : 'Could not load neighbors', reload),
+      )
+    }
+  }
+
+  wrap.append(requestsWrap, nearWrap, connectedWrap)
+  reload()
+  return wrap
 }
 
 /* --- Help & support --- */

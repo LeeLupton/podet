@@ -53,13 +53,25 @@ create table if not exists gigs (
   created_at   text not null default (datetime('now'))
 );
 
+-- REVIEWS — two-sided and restorative. Both gig parties may review each other
+-- (worker_id/hirer_id are always the two parties; author_id/subject_id say who
+-- rated whom). 4-5 stars publish immediately; a 1-2 star review is HELD as
+-- RESOLVING — a private improvement conversation opens and the score stays
+-- unpublished until the author revises it up, withdraws it, or the 7-day
+-- deadline passes (auto-publish, so a held review can never be a silent veto).
+-- Reputation accrues only when a review reaches PUBLISHED.
 create table if not exists reviews (
   id         text primary key,
   gig_id     text not null references gigs(id),
-  worker_id  text not null references users(id),
-  hirer_id   text not null references users(id),
+  worker_id  text not null references users(id),    -- the gig's worker
+  hirer_id   text not null references users(id),     -- the gig's hirer
+  author_id  text references users(id),              -- who wrote the review
+  subject_id text references users(id),              -- who it is about
   stars      integer not null check (stars between 1 and 5),
   body       text,
+  status     text not null default 'PUBLISHED' check (status in ('PUBLISHED','RESOLVING')),
+  resolve_deadline text,                             -- when a held review auto-publishes
+  responded  integer not null default 0,             -- subject engaged in resolution?
   created_at text not null default (datetime('now'))
 );
 
@@ -111,6 +123,8 @@ create table if not exists rate_limits (
 create index if not exists idx_gigs_status   on gigs(status);
 create index if not exists idx_gigs_bbox     on gigs(lat, lng);
 create index if not exists idx_reviews_wkr   on reviews(worker_id);
+create index if not exists idx_reviews_subject   on reviews(subject_id, status);
+create index if not exists idx_reviews_resolving on reviews(status, resolve_deadline);
 create index if not exists idx_posts_time    on posts(created_at);
 create index if not exists idx_comments_post on post_comments(post_id);
 
@@ -124,6 +138,74 @@ create table if not exists gig_messages (
 );
 
 create index if not exists idx_gig_messages_gig on gig_messages(gig_id);
+
+-- REVIEW MESSAGES — the private resolution thread for a held (RESOLVING) review,
+-- between its author and subject. Separate from gig_messages so the improvement
+-- conversation is tied to the review itself, not buried in gig coordination.
+create table if not exists review_messages (
+  id         text primary key,
+  review_id  text not null references reviews(id) on delete cascade,
+  sender_id  text not null references users(id),
+  body       text not null,
+  created_at text not null default (datetime('now'))
+);
+
+create index if not exists idx_review_messages_review on review_messages(review_id);
+
+-- PROPERTIES — places a user manages (a homeowner's house, a manager's units).
+-- Coordinates are PRIVATE: never returned for anyone but the owner. They power
+-- the derived "neighbor" tag on gigs/profiles (proximity only — no address,
+-- distance, or which-property is ever exposed to another user).
+create table if not exists properties (
+  id         text primary key,
+  owner_id   text not null references users(id) on delete cascade,
+  label      text not null,
+  lat        real not null,
+  lng        real not null,
+  created_at text not null default (datetime('now'))
+);
+
+create index if not exists idx_properties_owner on properties(owner_id);
+create index if not exists idx_properties_bbox  on properties(lat, lng);
+
+-- CONNECTIONS — mutual-consent links between landscapers (discovered via the
+-- neighbor list). One row per pair; a request is PENDING until the addressee
+-- accepts. Only ACCEPTED connections may exchange direct messages.
+create table if not exists connections (
+  requester_id text not null references users(id) on delete cascade,
+  addressee_id text not null references users(id) on delete cascade,
+  status       text not null default 'PENDING' check (status in ('PENDING','ACCEPTED')),
+  created_at   text not null default (datetime('now')),
+  primary key (requester_id, addressee_id)
+);
+
+create index if not exists idx_connections_addressee on connections(addressee_id, status);
+create index if not exists idx_connections_requester on connections(requester_id, status);
+
+-- DIRECT MESSAGES — a thread between two connected users. The pair is stored in
+-- canonical order (user_lo < user_hi) so one conversation has one key.
+create table if not exists direct_messages (
+  id         text primary key,
+  user_lo    text not null references users(id),
+  user_hi    text not null references users(id),
+  sender_id  text not null references users(id),
+  body       text not null,
+  created_at text not null default (datetime('now'))
+);
+
+create index if not exists idx_dm_pair on direct_messages(user_lo, user_hi, created_at);
+
+-- MESSAGE READS — per-user, per-thread last-read marker, powering the unread
+-- badge. scope ∈ {dm, gig, review}; scope_id is the other user's id (dm), the
+-- gig id, or the review id. A thread is unread when it has messages from someone
+-- else created after last_read_at (or with no marker yet).
+create table if not exists message_reads (
+  user_id      text not null references users(id) on delete cascade,
+  scope        text not null check (scope in ('dm','gig','review')),
+  scope_id     text not null,
+  last_read_at text not null default (datetime('now')),
+  primary key (user_id, scope, scope_id)
+);
 
 -- REPORTS — content/user reports, verification requests, and support tickets.
 create table if not exists reports (

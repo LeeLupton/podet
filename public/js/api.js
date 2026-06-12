@@ -83,6 +83,18 @@ export const api = {
   imgUrl: (key) => `${BASE}/img/${key}`,
   completeGig: (id, rating, review) =>
     request(`/gigs/${id}/complete`, { method: 'POST', body: { rating, review } }),
+  reviewHirer: (id, rating, review) =>
+    request(`/gigs/${id}/review`, { method: 'POST', body: { rating, review } }),
+
+  // Restorative review resolution
+  resolvingReviews: () => request('/reviews/resolving'),
+  reviseReview: (id, rating) =>
+    request(`/reviews/${id}/revise`, { method: 'POST', body: { rating } }),
+  withdrawReview: (id) => request(`/reviews/${id}/withdraw`, { method: 'POST' }),
+  acknowledgeReview: (id) => request(`/reviews/${id}/acknowledge`, { method: 'POST' }),
+  reviewMessages: (id) => request(`/reviews/${id}/messages`),
+  sendReviewMessage: (id, body) =>
+    request(`/reviews/${id}/messages`, { method: 'POST', body: { body } }),
 
   // Board
   posts: (before) => request(`/posts${before ? `?before=${encodeURIComponent(before)}` : ''}`),
@@ -128,6 +140,25 @@ export const api = {
   block: (userId) => request(`/users/${userId}/block`, { method: 'POST' }),
   unblock: (userId) => request(`/users/${userId}/block`, { method: 'DELETE' }),
   blocks: () => request('/me/blocks'),
+
+  // Properties (private; power the derived "neighbor" tag)
+  properties: () => request('/me/properties'),
+  addProperty: (label, lat, lng) =>
+    request('/me/properties', { method: 'POST', body: { label, lat, lng } }),
+  deleteProperty: (id) => request(`/me/properties/${id}`, { method: 'DELETE' }),
+
+  // Neighbors & connections (landscaper-to-landscaper networking)
+  neighbors: () => request('/me/neighbors'),
+  connections: () => request('/me/connections'),
+  connect: (userId) => request(`/users/${userId}/connect`, { method: 'POST' }),
+  acceptConnect: (userId) => request(`/users/${userId}/connect/accept`, { method: 'POST' }),
+  disconnect: (userId) => request(`/users/${userId}/connect`, { method: 'DELETE' }),
+  dms: (userId) => request(`/dms/${userId}`),
+  sendDm: (userId, body) => request(`/dms/${userId}`, { method: 'POST', body: { body } }),
+
+  // Unread badge
+  unread: () => request('/me/unread'),
+  markRead: (scope, scope_id) => request('/reads', { method: 'POST', body: { scope, scope_id } }),
 
   // Account
   deleteAccount: (password) => request('/me/delete', { method: 'POST', body: { password } }),

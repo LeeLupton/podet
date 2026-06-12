@@ -172,6 +172,79 @@ describe('UI surface sweep (no 404/500 from any api.js route)', () => {
       ).status,
     )
     check('GET /gigs/:id/messages', (await call(`/gigs/${gid2}/messages`, {}, b.token)).status)
+    // Restorative reviews: worker reviews hirer after marking done; resolution feed.
+    check(
+      'POST /gigs/:id/done (review)',
+      (await call(`/gigs/${gid2}/done`, { method: 'POST' }, b.token)).status,
+    )
+    check(
+      'POST /gigs/:id/review',
+      (
+        await call(
+          `/gigs/${gid2}/review`,
+          { method: 'POST', body: JSON.stringify({ rating: 5, review: 'sweep' }) },
+          b.token,
+        )
+      ).status,
+    )
+    check('GET /reviews/resolving', (await call('/reviews/resolving', {}, a.token)).status)
+    // Resolution thread: hold a 1★ review, then exercise its message routes.
+    const gidR = await postGig(a.token)
+    await claim(gidR, b.token)
+    await call(
+      `/gigs/${gidR}/complete`,
+      { method: 'POST', body: JSON.stringify({ rating: 1, review: 'held' }) },
+      a.token,
+    )
+    const heldList = await call('/reviews/resolving', {}, a.token)
+    const heldId = heldList.body.authored[0].id
+    check(
+      'POST /reviews/:id/messages',
+      (
+        await call(
+          `/reviews/${heldId}/messages`,
+          { method: 'POST', body: JSON.stringify({ body: 'sweep' }) },
+          a.token,
+        )
+      ).status,
+    )
+    check(
+      'GET /reviews/:id/messages',
+      (await call(`/reviews/${heldId}/messages`, {}, a.token)).status,
+    )
+    check(
+      'POST /reviews/:id/acknowledge',
+      (await call(`/reviews/${heldId}/acknowledge`, { method: 'POST' }, b.token)).status,
+    )
+    check(
+      'POST /reviews/:id/revise',
+      (
+        await call(
+          `/reviews/${heldId}/revise`,
+          { method: 'POST', body: JSON.stringify({ rating: 4 }) },
+          a.token,
+        )
+      ).status,
+    )
+    // a second held review to exercise withdraw
+    const gidW = await postGig(a.token)
+    await claim(gidW, b.token)
+    await call(
+      `/gigs/${gidW}/complete`,
+      { method: 'POST', body: JSON.stringify({ rating: 1 }) },
+      a.token,
+    )
+    const heldList2 = await call('/reviews/resolving', {}, a.token)
+    check(
+      'POST /reviews/:id/withdraw',
+      (
+        await call(
+          `/reviews/${heldList2.body.authored[0].id}/withdraw`,
+          { method: 'POST' },
+          a.token,
+        )
+      ).status,
+    )
     check(
       'POST /reports',
       (
@@ -193,6 +266,57 @@ describe('UI surface sweep (no 404/500 from any api.js route)', () => {
         )
       ).status,
     )
+    // Properties surface
+    const prop = await call(
+      '/me/properties',
+      { method: 'POST', body: JSON.stringify({ label: 'Sweep place', lat: 34.72, lng: -76.66 }) },
+      a.token,
+    )
+    check('POST /me/properties', prop.status)
+    check('GET /me/properties', (await call('/me/properties', {}, a.token)).status)
+    check(
+      'DELETE /me/properties/:id',
+      (await call(`/me/properties/${prop.body.id}`, { method: 'DELETE' }, a.token)).status,
+    )
+
+    // Neighbors & connections surface
+    check('GET /me/neighbors', (await call('/me/neighbors', {}, a.token)).status)
+    check('GET /me/connections', (await call('/me/connections', {}, a.token)).status)
+    check(
+      'POST /users/:id/connect',
+      (await call(`/users/${b.id}/connect`, { method: 'POST' }, a.token)).status,
+    )
+    check(
+      'POST /users/:id/connect/accept',
+      (await call(`/users/${a.id}/connect/accept`, { method: 'POST' }, b.token)).status,
+    )
+    check(
+      'POST /dms/:userId',
+      (
+        await call(
+          `/dms/${b.id}`,
+          { method: 'POST', body: JSON.stringify({ body: 'hi' }) },
+          a.token,
+        )
+      ).status,
+    )
+    check('GET /dms/:userId', (await call(`/dms/${b.id}`, {}, a.token)).status)
+    check('GET /me/unread', (await call('/me/unread', {}, a.token)).status)
+    check(
+      'POST /reads',
+      (
+        await call(
+          '/reads',
+          { method: 'POST', body: JSON.stringify({ scope: 'dm', scope_id: b.id }) },
+          a.token,
+        )
+      ).status,
+    )
+    check(
+      'DELETE /users/:id/connect',
+      (await call(`/users/${b.id}/connect`, { method: 'DELETE' }, a.token)).status,
+    )
+
     // Admin endpoints exist (403 for non-admins, never 404)
     check('GET /admin/reports', (await call('/admin/reports', {}, a.token)).status)
     check(

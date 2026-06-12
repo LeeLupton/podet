@@ -7,6 +7,7 @@ import { renderFeed, resetFeed, stopPolling } from './feed.js'
 import { renderPostForm, setOnPosted, setPrefill } from './post.js'
 import { renderProfile, setOnEditGig, setOnLoggedOut } from './profile.js'
 import { clear, h, toast } from './ui.js'
+import { mountUnreadBadge, refreshUnread, startUnreadPolling, stopUnreadPolling } from './unread.js'
 
 const VIEWS = {
   nearby: { el: () => document.getElementById('view-nearby'), render: renderFeed },
@@ -29,12 +30,17 @@ function navigate(tab) {
     btn.setAttribute('aria-current', btn.dataset.tab === tab ? 'page' : 'false')
   }
   VIEWS[tab].render(VIEWS[tab].el())
+  // Opening Me marks threads read as you go; keep the badge in sync.
+  refreshUnread()
 }
 
 function showApp() {
   document.getElementById('auth-gate').classList.add('hidden')
   document.getElementById('app').classList.remove('hidden')
   document.getElementById('tabbar').classList.remove('hidden')
+  const meTab = document.querySelector('#tabbar .tab[data-tab="me"]')
+  if (meTab) mountUnreadBadge(meTab)
+  startUnreadPolling()
   navigate('nearby')
 }
 
@@ -148,6 +154,7 @@ setOnEditGig((g) => {
 })
 setOnLoggedOut(() => {
   resetFeed()
+  stopUnreadPolling()
   showGate()
 })
 

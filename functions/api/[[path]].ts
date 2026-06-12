@@ -16,13 +16,15 @@ import { secureHeaders } from 'hono/secure-headers'
 
 import { bboxDeltas, haversineMiles } from '../lib/geo'
 import { parseGigInput } from '../lib/gig'
+import { ADJACENT_MILES, type Point, pointNearAny, setsAdjacent } from '../lib/neighbor'
 import { clampLimit, parseBefore } from '../lib/pagination'
 import { DUMMY_PASSWORD_HASH, hashPassword, verifyPassword } from '../lib/password'
 import { MAX_PHOTOS_PER_GIG, checkImageUpload, photoKey } from '../lib/photos'
 import { type PushDeliveryOptions, isAllowedPushEndpoint, sendWebPush, topicFor } from '../lib/push'
 import { rateLimitKey, windowStart } from '../lib/ratelimit'
+import { REVIEW, planReview, planRevision } from '../lib/review'
 import { validateSlot } from '../lib/schedule'
-import { LIMITS, isValidRating, validateString } from '../lib/validate'
+import { LIMITS, isValidLatLng, isValidRating, validateString } from '../lib/validate'
 
 type Env = {
   DB: D1Database
@@ -111,7 +113,16 @@ async function notifyUser(
   )
     .bind(userId)
     .all()
-  const body = JSON.stringify(payload)
+  if (!(subs.results as any[]).length) return
+  // Carry the recipient's current unread total so the service worker can set the
+  // OS app badge (the message was already inserted before this call).
+  let withBadge = payload
+  try {
+    withBadge = { ...payload, badge: (await unreadCounts(c.env.DB, userId)).unread }
+  } catch {
+    // best-effort — never block the push on the badge count
+  }
+  const body = JSON.stringify(withBadge)
   const subject = c.env.VAPID_SUBJECT || 'mailto:podnet@example.com'
   await Promise.all(
     (subs.results as any[]).map(async (s) => {
@@ -137,6 +148,77 @@ function fireAndForget(c: any, promise: Promise<unknown>): void {
     // no execution context (e.g. unit tests) — let it run detached
     void promise
   }
+}
+
+// A user's property coordinates (private — used only to derive neighbor tags,
+// never returned for anyone but the owner).
+async function loadPropertyPoints(db: D1Database, userId: string): Promise<Point[]> {
+  const res = await db
+    .prepare('select lat, lng from properties where owner_id = ? limit 200')
+    .bind(userId)
+    .all()
+  return (res.results as any[]).map((p) => ({ lat: p.lat, lng: p.lng }))
+}
+
+// How many OTHER landscapers have a property adjacent to one of this user's —
+// the public network-density signal shown on profiles. A bbox prefilter (index
+// idx_properties_bbox) narrows candidates; haversine refines to the real circle.
+// Returns a count only; no identities, coordinates, or distances are exposed.
+async function countNeighbors(db: D1Database, userId: string): Promise<number> {
+  const pts = await loadPropertyPoints(db, userId)
+  if (!pts.length) return 0
+  const { latDelta, lngDelta } = bboxDeltas(pts[0].lat, ADJACENT_MILES)
+  const res = await db
+    .prepare(
+      `select p2.owner_id as oid, p2.lat as olat, p2.lng as olng, p1.lat as tlat, p1.lng as tlng
+         from properties p1
+         join properties p2
+           on p2.owner_id <> p1.owner_id
+          and p2.lat between p1.lat - ? and p1.lat + ?
+          and p2.lng between p1.lng - ? and p1.lng + ?
+         join users u on u.id = p2.owner_id and u.deleted = 0
+        where p1.owner_id = ?`,
+    )
+    .bind(latDelta, latDelta, lngDelta, lngDelta, userId)
+    .all()
+  const set = new Set<string>()
+  for (const r of res.results as any[]) {
+    if (haversineMiles(r.tlat, r.tlng, r.olat, r.olng) <= ADJACENT_MILES) set.add(r.oid)
+  }
+  return set.size
+}
+
+// Reputation accrues to the person a review is ABOUT, and only when the review
+// reaches PUBLISHED (never while it's held in resolution).
+function accrueRatingStmt(db: D1Database, subjectId: string, stars: number) {
+  return db
+    .prepare(
+      `update users set rating_sum = rating_sum + ?, rating_count = rating_count + 1 where id = ?`,
+    )
+    .bind(stars, subjectId)
+}
+
+// Pages has no cron, so held reviews publish lazily: any read path that surfaces
+// reputation sweeps RESOLVING reviews whose 7-day deadline has passed and
+// publishes them at their committed score (accruing the rating then). This is
+// the terminal state that stops a held review from being a silent veto.
+async function publishExpiredReviews(db: D1Database): Promise<void> {
+  const due = await db
+    .prepare(
+      `select id, subject_id, stars from reviews
+        where status = 'RESOLVING' and resolve_deadline is not null
+          and resolve_deadline <= ?`,
+    )
+    .bind(new Date().toISOString())
+    .all()
+  const rows = due.results as any[]
+  if (!rows.length) return
+  const stmts = []
+  for (const r of rows) {
+    stmts.push(db.prepare(`update reviews set status = 'PUBLISHED' where id = ?`).bind(r.id))
+    stmts.push(accrueRatingStmt(db, r.subject_id, r.stars))
+  }
+  await db.batch(stmts)
 }
 
 /* ------------------------------------------------------------------ *
@@ -437,10 +519,18 @@ app.get('/gigs/near', async (c) => {
     .bind(lat - latDelta, lat + latDelta, lng - lngDelta, lng + lngDelta, new Date().toISOString())
     .all()
 
-  const blocked = await blockedSet(c.env.DB, c.get('userId'))
+  const [blocked, myProps] = await Promise.all([
+    blockedSet(c.env.DB, c.get('userId')),
+    loadPropertyPoints(c.env.DB, c.get('userId')),
+  ])
+  // "neighbor" = this gig sits next to one of YOUR properties (boolean only).
   const near = (rows.results as any[])
     .filter((g) => !blocked.has(g.posted_by))
-    .map((g) => ({ ...g, distance_mi: haversineMiles(lat, lng, g.lat, g.lng) }))
+    .map((g) => ({
+      ...g,
+      distance_mi: haversineMiles(lat, lng, g.lat, g.lng),
+      neighbor: pointNearAny(g.lat, g.lng, myProps) ? 1 : 0,
+    }))
     .filter((g) => g.distance_mi <= r)
     .sort((a, b) => a.distance_mi - b.distance_mi)
 
@@ -461,11 +551,12 @@ app.get('/gigs/mine', async (c) => {
     .all()
   const claimed = await c.env.DB.prepare(
     `select g.*, hp.display_name as poster_name,
-            (select count(*) from gig_messages m where m.gig_id = g.id) as message_count
+            (select count(*) from gig_messages m where m.gig_id = g.id) as message_count,
+            (select count(*) from reviews r where r.gig_id = g.id and r.author_id = ?) as reviewed_by_me
        from gigs g join users hp on hp.id = g.posted_by
       where g.claimed_by = ? order by g.created_at desc limit 200`,
   )
-    .bind(userId)
+    .bind(userId, userId)
     .all()
   // Attach photos to the gigs you posted (shown on your profile).
   const postedRows = posted.results as any[]
@@ -498,6 +589,8 @@ app.get('/gigs/:id', async (c) => {
   ) {
     return c.json({ error: 'not found' }, 404)
   }
+  const myProps = await loadPropertyPoints(c.env.DB, viewer)
+  gig.neighbor = pointNearAny(gig.lat, gig.lng, myProps) ? 1 : 0
   return c.json(gig)
 })
 
@@ -654,31 +747,299 @@ app.post('/gigs/:id/complete', async (c) => {
     return c.json({ error: 'only the poster can complete this gig' }, 403)
   if (gig.status !== 'CLAIMED') return c.json({ error: 'gig is not in a claimed state' }, 409)
 
+  // Completion always pays/closes the gig and credits the worker's gig count;
+  // the review's visibility, though, follows the restorative state machine.
+  const plan = planReview(rating)
   const reviewId = crypto.randomUUID()
-  await c.env.DB.batch([
+  const stmts = [
     c.env.DB.prepare(`update gigs set status = 'COMPLETED' where id = ?`).bind(id),
     c.env.DB.prepare(
-      `insert into reviews (id, gig_id, worker_id, hirer_id, stars, body) values (?, ?, ?, ?, ?, ?)`,
-    ).bind(reviewId, id, gig.claimed_by, userId, rating, review),
-    c.env.DB.prepare(
-      `update users set total_gigs = total_gigs + 1, rating_sum = rating_sum + ?, rating_count = rating_count + 1 where id = ?`,
-    ).bind(rating, gig.claimed_by),
-  ])
-  // Best-effort: tell the worker they were paid and rated.
+      `insert into reviews (id, gig_id, worker_id, hirer_id, author_id, subject_id, stars, body, status, resolve_deadline)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      reviewId,
+      id,
+      gig.claimed_by,
+      userId,
+      userId,
+      gig.claimed_by,
+      rating,
+      review,
+      plan.status,
+      plan.resolve_deadline,
+    ),
+    c.env.DB.prepare(`update users set total_gigs = total_gigs + 1 where id = ?`).bind(
+      gig.claimed_by,
+    ),
+  ]
+  // Reputation only moves when the review is public; a held review accrues on
+  // resolution or at its deadline instead.
+  if (plan.status === 'PUBLISHED') stmts.push(accrueRatingStmt(c.env.DB, gig.claimed_by, rating))
+  await c.env.DB.batch(stmts)
+
   fireAndForget(
     c,
     notifyUser(
       c,
       gig.claimed_by,
-      {
-        title: `You were rated ${rating}★`,
-        body: `${gig.task_type} — paid ${gig.cash_payout}`,
-        url: '/',
-      },
+      plan.status === 'PUBLISHED'
+        ? {
+            title: `You were rated ${rating}★`,
+            body: `${gig.task_type} — paid ${gig.cash_payout}`,
+            url: '/',
+          }
+        : {
+            title: 'A review is open for discussion',
+            body: `${gig.task_type} — paid ${gig.cash_payout}. Tap to talk it through.`,
+            url: '/',
+          },
       { topic: topicFor(id), urgency: 'high' },
     ),
   )
+  return c.json({ ok: true, review_status: plan.status })
+})
+
+// The WORKER reviews the HIRER — the other half of two-sided accountability.
+// Allowed once the worker has marked the work done (so a hirer who ghosts
+// without paying can still be reviewed) or after the gig is completed. Same
+// restorative state machine as the hirer's review.
+app.post('/gigs/:id/review', async (c) => {
+  const userId = c.get('userId')
+  const id = c.req.param('id')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const rating = Number(b.rating)
+  const reviewCheck = validateString(b.review, LIMITS.review_body, { required: false })
+  if (!reviewCheck.ok) return c.json({ error: 'review too long' }, 400)
+  if (!isValidRating(rating)) return c.json({ error: 'rating must be an integer 1-5' }, 400)
+
+  const gig: any = await c.env.DB.prepare('select * from gigs where id = ?').bind(id).first()
+  if (!gig) return c.json({ error: 'not found' }, 404)
+  if (gig.claimed_by !== userId)
+    return c.json({ error: 'only the worker can review the hirer' }, 403)
+  if (!gig.done_at && gig.status !== 'COMPLETED') {
+    return c.json({ error: 'review the hirer after marking the work done' }, 409)
+  }
+  const existing = await c.env.DB.prepare(
+    `select 1 from reviews where gig_id = ? and author_id = ?`,
+  )
+    .bind(id, userId)
+    .first()
+  if (existing) return c.json({ error: 'you already reviewed this gig' }, 409)
+
+  const plan = planReview(rating)
+  const reviewId = crypto.randomUUID()
+  const stmts = [
+    c.env.DB.prepare(
+      `insert into reviews (id, gig_id, worker_id, hirer_id, author_id, subject_id, stars, body, status, resolve_deadline)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      reviewId,
+      id,
+      gig.claimed_by,
+      gig.posted_by,
+      userId,
+      gig.posted_by,
+      rating,
+      reviewCheck.value,
+      plan.status,
+      plan.resolve_deadline,
+    ),
+  ]
+  if (plan.status === 'PUBLISHED') stmts.push(accrueRatingStmt(c.env.DB, gig.posted_by, rating))
+  await c.env.DB.batch(stmts)
+
+  fireAndForget(
+    c,
+    notifyUser(
+      c,
+      gig.posted_by,
+      plan.status === 'PUBLISHED'
+        ? { title: `A worker rated you ${rating}★`, body: gig.task_type, url: '/' }
+        : {
+            title: 'A review is open for discussion',
+            body: `${gig.task_type} — tap to talk it through.`,
+            url: '/',
+          },
+      { topic: topicFor(id), urgency: 'normal' },
+    ),
+  )
+  return c.json({ ok: true, review_status: plan.status }, 201)
+})
+
+// Resolution surfaces for the signed-in user:
+//  - authored: my held reviews, each with the counterpart's review IF it's 4-5
+//    (the empathy nudge — "they thought well of you, sure you want to go low?").
+//  - about_me: held reviews about me — the written feedback to act on, but NOT
+//    the star number (resolution is about the substance, not the score).
+app.get('/reviews/resolving', async (c) => {
+  const userId = c.get('userId')
+  await publishExpiredReviews(c.env.DB)
+  const authoredRes = await c.env.DB.prepare(
+    `select r.id, r.gig_id, r.subject_id, r.stars, r.body, r.responded, r.resolve_deadline,
+            g.task_type, su.display_name as subject_name
+       from reviews r join gigs g on g.id = r.gig_id
+       join users su on su.id = r.subject_id
+      where r.author_id = ? and r.status = 'RESOLVING'
+      order by r.created_at desc`,
+  )
+    .bind(userId)
+    .all()
+  const authored = authoredRes.results as any[]
+  for (const r of authored) {
+    const counter: any = await c.env.DB.prepare(
+      `select stars, body from reviews where gig_id = ? and author_id = ? and stars >= 4`,
+    )
+      .bind(r.gig_id, r.subject_id)
+      .first()
+    r.counterpart = counter ? { stars: counter.stars, body: counter.body } : null
+  }
+  const aboutRes = await c.env.DB.prepare(
+    `select r.id, r.gig_id, r.body, r.resolve_deadline,
+            g.task_type, au.display_name as author_name
+       from reviews r join gigs g on g.id = r.gig_id
+       join users au on au.id = r.author_id
+      where r.subject_id = ? and r.status = 'RESOLVING'
+      order by r.created_at desc`,
+  )
+    .bind(userId)
+    .all()
+  return c.json({ authored, about_me: aboutRes.results })
+})
+
+// Author raises a held review (ceiling-of-harm: up only). If it clears the hold
+// threshold it publishes and accrues; otherwise it stays in resolution.
+app.post('/reviews/:id/revise', async (c) => {
+  const userId = c.get('userId')
+  const id = c.req.param('id')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const review: any = await c.env.DB.prepare(
+    `select id, author_id, subject_id, stars, status from reviews where id = ?`,
+  )
+    .bind(id)
+    .first()
+  if (!review || review.author_id !== userId) return c.json({ error: 'not found' }, 404)
+  if (review.status !== 'RESOLVING') return c.json({ error: 'review is not in resolution' }, 409)
+  const plan = planRevision(review.stars, Number(b.rating))
+  if (!plan.ok) return c.json({ error: plan.reason }, 400)
+  const stmts = [
+    c.env.DB.prepare(`update reviews set stars = ?, status = ? where id = ?`).bind(
+      plan.stars,
+      plan.status,
+      id,
+    ),
+  ]
+  if (plan.status === 'PUBLISHED')
+    stmts.push(accrueRatingStmt(c.env.DB, review.subject_id, plan.stars))
+  await c.env.DB.batch(stmts)
+  return c.json({ ok: true, review_status: plan.status })
+})
+
+// Author withdraws a held review entirely (no score, nothing published).
+app.post('/reviews/:id/withdraw', async (c) => {
+  const userId = c.get('userId')
+  const res = await c.env.DB.prepare(
+    `delete from reviews where id = ? and author_id = ? and status = 'RESOLVING'`,
+  )
+    .bind(c.req.param('id'), userId)
+    .run()
+  if (res.meta.changes < 1) return c.json({ error: 'not found or not in resolution' }, 404)
   return c.json({ ok: true })
+})
+
+// Subject acknowledges a held review — records that they engaged (so a review
+// that auto-publishes unanswered is distinguishable from one that was discussed).
+app.post('/reviews/:id/acknowledge', async (c) => {
+  const userId = c.get('userId')
+  const res = await c.env.DB.prepare(
+    `update reviews set responded = 1 where id = ? and subject_id = ? and status = 'RESOLVING'`,
+  )
+    .bind(c.req.param('id'), userId)
+    .run()
+  if (res.meta.changes < 1) return c.json({ error: 'not found or not in resolution' }, 404)
+  return c.json({ ok: true })
+})
+
+// The resolution thread — a private channel between a held review's author and
+// subject, the place the improvement conversation actually happens. Loaded by
+// either party; readable while the review exists (so they can see how it was
+// settled). Unlike gig messages it is NOT sealed by a block: it is bounded to
+// one held review and is the constructive path, not open DMs.
+async function reviewForThread(
+  db: D1Database,
+  reviewId: string,
+  userId: string,
+): Promise<any | null> {
+  const r: any = await db
+    .prepare('select id, author_id, subject_id, status from reviews where id = ?')
+    .bind(reviewId)
+    .first()
+  if (!r || (r.author_id !== userId && r.subject_id !== userId)) return null
+  return r
+}
+
+app.get('/reviews/:id/messages', async (c) => {
+  const userId = c.get('userId')
+  const review = await reviewForThread(c.env.DB, c.req.param('id'), userId)
+  if (!review) return c.json({ error: 'not found' }, 404)
+  const rows = await c.env.DB.prepare(
+    `select m.id, m.sender_id, m.body, m.created_at, u.display_name as sender_name
+       from review_messages m join users u on u.id = m.sender_id
+      where m.review_id = ? order by m.created_at asc limit 200`,
+  )
+    .bind(review.id)
+    .all()
+  return c.json(rows.results)
+})
+
+app.post('/reviews/:id/messages', async (c) => {
+  if (!(await rateLimit(c, 'review-msg', 60, 300))) {
+    return c.json({ error: 'too many messages — slow down' }, 429)
+  }
+  const userId = c.get('userId')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const bodyCheck = validateString(b.body, LIMITS.message_body)
+  if (!bodyCheck.ok) return c.json({ error: 'message must be 1-1000 chars' }, 400)
+  const review = await reviewForThread(c.env.DB, c.req.param('id'), userId)
+  if (!review) return c.json({ error: 'not found' }, 404)
+  if (review.status !== 'RESOLVING') {
+    return c.json({ error: 'this review is no longer in resolution' }, 409)
+  }
+  const stmts = [
+    c.env.DB.prepare(
+      `insert into review_messages (id, review_id, sender_id, body) values (?, ?, ?, ?)`,
+    ).bind(crypto.randomUUID(), review.id, userId, bodyCheck.value),
+  ]
+  // The subject participating IS engagement — fold acknowledgement into it.
+  if (review.subject_id === userId && !review.responded) {
+    stmts.push(c.env.DB.prepare(`update reviews set responded = 1 where id = ?`).bind(review.id))
+  }
+  await c.env.DB.batch(stmts)
+  const other = review.author_id === userId ? review.subject_id : review.author_id
+  fireAndForget(
+    c,
+    notifyUser(
+      c,
+      other,
+      { title: 'New message about a review', body: 'Tap to continue the conversation.', url: '/' },
+      { topic: topicFor(review.id), urgency: 'normal' },
+    ),
+  )
+  return c.json({ ok: true }, 201)
 })
 
 // Edit your own gig — only while AVAILABLE (can't change a gig someone's working).
@@ -1264,8 +1625,10 @@ app.delete('/posts/:id/interest', async (c) => {
 app.get('/users/:id', async (c) => {
   const targetId = c.req.param('id')
   const callerId = c.get('userId')
-  // One D1 batch (single round trip): profile row, hirer counts, block both ways.
-  const [userRes, hirerRes, iBlockedRes, blockedMeRes] = await c.env.DB.batch([
+  await publishExpiredReviews(c.env.DB)
+  // One D1 batch (single round trip): profile row, hirer counts, distinct
+  // counterparties (the hard-to-fake skill signal), block both ways.
+  const [userRes, hirerRes, distinctRes, iBlockedRes, blockedMeRes] = await c.env.DB.batch([
     c.env.DB.prepare(
       `select id, display_name, total_gigs, rating_sum, rating_count, business_name, verified, deleted, created_at from users where id = ?`,
     ).bind(targetId),
@@ -1273,6 +1636,10 @@ app.get('/users/:id', async (c) => {
       `select count(*) as posted,
                 sum(case when status = 'COMPLETED' then 1 else 0 end) as paid
            from gigs where posted_by = ?`,
+    ).bind(targetId),
+    c.env.DB.prepare(
+      `select count(distinct author_id) as neighbors
+         from reviews where subject_id = ? and status = 'PUBLISHED'`,
     ).bind(targetId),
     c.env.DB.prepare('select 1 from blocks where blocker_id = ? and blocked_id = ?').bind(
       callerId,
@@ -1295,18 +1662,34 @@ app.get('/users/:id', async (c) => {
   // Hirer-side accountability: how many gigs they've posted and paid out, so a
   // worker can judge a hirer before claiming (total_gigs is worker-side only).
   const hirer: any = (hirerRes.results as any[])[0]
+  const distinct: any = (distinctRes.results as any[])[0]
   const blocked = (iBlockedRes.results as any[]).length > 0
+  // "Neighbor" — do you and they manage adjacent properties? Derived boolean only;
+  // never reveals either side's addresses, distance, or which property matched.
+  let neighbor = false
+  if (targetId !== callerId) {
+    const [mine, theirs] = await Promise.all([
+      loadPropertyPoints(c.env.DB, callerId),
+      loadPropertyPoints(c.env.DB, targetId),
+    ])
+    neighbor = mine.length > 0 && theirs.length > 0 && setsAdjacent(mine, theirs)
+  }
+  // Public network-density signal: how many other landscapers' routes touch theirs.
+  const neighborCount = await countNeighbors(c.env.DB, targetId)
   return c.json({
     id: user.id,
     display_name: user.display_name,
     total_gigs: user.total_gigs,
     rating_count: user.rating_count,
     average_rating: average,
+    distinct_counterparties: distinct?.neighbors ?? 0,
     business_name: user.business_name,
     verified: user.verified,
     gigs_posted: hirer?.posted ?? 0,
     gigs_paid: hirer?.paid ?? 0,
     i_blocked: blocked ? 1 : 0,
+    neighbor: neighbor ? 1 : 0,
+    neighbor_count: neighborCount,
     created_at: user.created_at,
   })
 })
@@ -1366,17 +1749,426 @@ app.get('/me/blocks', async (c) => {
   return c.json(rows.results)
 })
 
+/* ============================ PROPERTIES ========================== */
+// Places a user manages. Coordinates are PRIVATE — only the owner ever reads
+// them back; everyone else only ever sees the derived "neighbor" boolean.
+const MAX_PROPERTIES = 50
+
+app.get('/me/properties', async (c) => {
+  const rows = await c.env.DB.prepare(
+    `select id, label, lat, lng, created_at from properties where owner_id = ? order by created_at desc`,
+  )
+    .bind(c.get('userId'))
+    .all()
+  return c.json(rows.results)
+})
+
+app.post('/me/properties', async (c) => {
+  if (!(await rateLimit(c, 'property-create', 20, 300))) {
+    return c.json({ error: 'too many properties — slow down' }, 429)
+  }
+  const userId = c.get('userId')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const labelCheck = validateString(b.label, LIMITS.area_label)
+  if (!labelCheck.ok || !labelCheck.value) return c.json({ error: 'label required' }, 400)
+  const lat = Number(b.lat)
+  const lng = Number(b.lng)
+  if (!isValidLatLng(lat, lng)) return c.json({ error: 'valid lat/lng required' }, 400)
+  const count: any = await c.env.DB.prepare(
+    'select count(*) as n from properties where owner_id = ?',
+  )
+    .bind(userId)
+    .first()
+  if ((count?.n ?? 0) >= MAX_PROPERTIES) {
+    return c.json({ error: `at most ${MAX_PROPERTIES} properties` }, 409)
+  }
+  const id = crypto.randomUUID()
+  await c.env.DB.prepare(
+    'insert into properties (id, owner_id, label, lat, lng) values (?, ?, ?, ?, ?)',
+  )
+    .bind(id, userId, labelCheck.value, lat, lng)
+    .run()
+  return c.json({ id }, 201)
+})
+
+app.delete('/me/properties/:id', async (c) => {
+  const res = await c.env.DB.prepare('delete from properties where id = ? and owner_id = ?')
+    .bind(c.req.param('id'), c.get('userId'))
+    .run()
+  if (res.meta.changes < 1) return c.json({ error: 'not found or not yours' }, 404)
+  return c.json({ ok: true })
+})
+
+/* =================== NEIGHBORS & CONNECTIONS ===================== */
+// Discovery + mutual-consent links between landscapers whose routes touch.
+// No location ever crosses the boundary — only identity, once both opt in.
+
+// Connection state between two users (one row per pair, either direction).
+async function connectionBetween(db: D1Database, a: string, b: string): Promise<any | null> {
+  return db
+    .prepare(
+      `select requester_id, addressee_id, status from connections
+        where (requester_id = ? and addressee_id = ?) or (requester_id = ? and addressee_id = ?)`,
+    )
+    .bind(a, b, b, a)
+    .first()
+}
+
+// Map each other-user id to the caller's relationship: connected / pending_out
+// (caller asked) / pending_in (caller was asked) / none.
+async function connectionStatuses(
+  db: D1Database,
+  userId: string,
+  ids: string[],
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>()
+  if (!ids.length) return map
+  const placeholders = ids.map(() => '?').join(',')
+  const res = await db
+    .prepare(
+      `select requester_id, addressee_id, status from connections
+        where (requester_id = ? and addressee_id in (${placeholders}))
+           or (addressee_id = ? and requester_id in (${placeholders}))`,
+    )
+    .bind(userId, ...ids, userId, ...ids)
+    .all()
+  for (const r of res.results as any[]) {
+    const other = r.requester_id === userId ? r.addressee_id : r.requester_id
+    if (r.status === 'ACCEPTED') map.set(other, 'connected')
+    else map.set(other, r.requester_id === userId ? 'pending_out' : 'pending_in')
+  }
+  return map
+}
+
+// The actionable neighbor list: other landscapers whose routes touch yours, each
+// with your current connection status so the UI can show Connect / Pending / Message.
+app.get('/me/neighbors', async (c) => {
+  const userId = c.get('userId')
+  const pts = await loadPropertyPoints(c.env.DB, userId)
+  if (!pts.length) return c.json([])
+  const { latDelta, lngDelta } = bboxDeltas(pts[0].lat, ADJACENT_MILES)
+  const cand = await c.env.DB.prepare(
+    `select p2.owner_id as oid, p2.lat as olat, p2.lng as olng, p1.lat as tlat, p1.lng as tlng,
+            u.display_name as display_name, u.verified as verified
+       from properties p1
+       join properties p2
+         on p2.owner_id <> p1.owner_id
+        and p2.lat between p1.lat - ? and p1.lat + ?
+        and p2.lng between p1.lng - ? and p1.lng + ?
+       join users u on u.id = p2.owner_id and u.deleted = 0
+      where p1.owner_id = ?`,
+  )
+    .bind(latDelta, latDelta, lngDelta, lngDelta, userId)
+    .all()
+  // Refine bbox candidates to the real circle; keep one entry per neighbor.
+  const byId = new Map<string, any>()
+  for (const r of cand.results as any[]) {
+    if (haversineMiles(r.tlat, r.tlng, r.olat, r.olng) <= ADJACENT_MILES && !byId.has(r.oid)) {
+      byId.set(r.oid, { id: r.oid, display_name: r.display_name, verified: r.verified })
+    }
+  }
+  const ids = [...byId.keys()]
+  const blocked = await blockedSet(c.env.DB, userId)
+  const visible = ids.filter((id) => !blocked.has(id))
+  const statuses = await connectionStatuses(c.env.DB, userId, visible)
+  return c.json(visible.map((id) => ({ ...byId.get(id), connection: statuses.get(id) ?? 'none' })))
+})
+
+// Your connections + the requests waiting on you (and the ones you've sent).
+app.get('/me/connections', async (c) => {
+  const userId = c.get('userId')
+  const res = await c.env.DB.prepare(
+    `select c.requester_id, c.addressee_id, c.status,
+            u.id as uid, u.display_name, u.verified
+       from connections c
+       join users u on u.id = case when c.requester_id = ? then c.addressee_id else c.requester_id end
+      where (c.requester_id = ? or c.addressee_id = ?) and u.deleted = 0
+      order by c.created_at desc`,
+  )
+    .bind(userId, userId, userId)
+    .all()
+  const connected: any[] = []
+  const incoming: any[] = []
+  const outgoing: any[] = []
+  for (const r of res.results as any[]) {
+    const who = { id: r.uid, display_name: r.display_name, verified: r.verified }
+    if (r.status === 'ACCEPTED') connected.push(who)
+    else if (r.addressee_id === userId) incoming.push(who)
+    else outgoing.push(who)
+  }
+  return c.json({ connected, incoming, outgoing })
+})
+
+// Send (or auto-accept a reciprocal) connection request.
+app.post('/users/:id/connect', async (c) => {
+  if (!(await rateLimit(c, 'connect', 30, 300))) {
+    return c.json({ error: 'too many requests — slow down' }, 429)
+  }
+  const me = c.get('userId')
+  const them = c.req.param('id')
+  if (them === me) return c.json({ error: "you can't connect with yourself" }, 400)
+  const target: any = await c.env.DB.prepare('select id, deleted from users where id = ?')
+    .bind(them)
+    .first()
+  if (!target || target.deleted) return c.json({ error: 'not found' }, 404)
+  if (await isBlockedBetween(c.env.DB, me, them)) return c.json({ error: 'unavailable' }, 403)
+
+  const existing = await connectionBetween(c.env.DB, me, them)
+  if (existing?.status === 'ACCEPTED') return c.json({ ok: true, status: 'connected' })
+  if (existing?.status === 'PENDING') {
+    if (existing.requester_id === me) return c.json({ ok: true, status: 'pending_out' })
+    // They already asked me — reciprocal request means accept.
+    await c.env.DB.prepare(
+      `update connections set status = 'ACCEPTED' where requester_id = ? and addressee_id = ?`,
+    )
+      .bind(them, me)
+      .run()
+    fireAndForget(
+      c,
+      notifyUser(
+        c,
+        them,
+        { title: 'Connection accepted', body: 'You can now message each other.', url: '/' },
+        { urgency: 'normal' },
+      ),
+    )
+    return c.json({ ok: true, status: 'connected' })
+  }
+  await c.env.DB.prepare(
+    `insert into connections (requester_id, addressee_id, status) values (?, ?, 'PENDING')`,
+  )
+    .bind(me, them)
+    .run()
+  fireAndForget(
+    c,
+    notifyUser(
+      c,
+      them,
+      { title: 'New connection request', body: 'A neighbor wants to connect.', url: '/' },
+      { urgency: 'normal' },
+    ),
+  )
+  return c.json({ ok: true, status: 'pending_out' }, 201)
+})
+
+// Accept a pending request that was sent TO you.
+app.post('/users/:id/connect/accept', async (c) => {
+  const me = c.get('userId')
+  const them = c.req.param('id')
+  const res = await c.env.DB.prepare(
+    `update connections set status = 'ACCEPTED'
+      where requester_id = ? and addressee_id = ? and status = 'PENDING'`,
+  )
+    .bind(them, me)
+    .run()
+  if (res.meta.changes < 1) return c.json({ error: 'no pending request' }, 404)
+  fireAndForget(
+    c,
+    notifyUser(
+      c,
+      them,
+      { title: 'Connection accepted', body: 'You can now message each other.', url: '/' },
+      { urgency: 'normal' },
+    ),
+  )
+  return c.json({ ok: true })
+})
+
+// Cancel a request, decline one, or disconnect — removes any link either way.
+app.delete('/users/:id/connect', async (c) => {
+  const me = c.get('userId')
+  const them = c.req.param('id')
+  await c.env.DB.prepare(
+    `delete from connections
+      where (requester_id = ? and addressee_id = ?) or (requester_id = ? and addressee_id = ?)`,
+  )
+    .bind(me, them, them, me)
+    .run()
+  return c.json({ ok: true })
+})
+
+/* ===================== DIRECT MESSAGES ========================== */
+// Between two ACCEPTED-connected users. Pair stored canonically (lo < hi).
+
+function pairKey(a: string, b: string): [string, string] {
+  return a < b ? [a, b] : [b, a]
+}
+
+async function areConnected(db: D1Database, a: string, b: string): Promise<boolean> {
+  const row = await connectionBetween(db, a, b)
+  return row?.status === 'ACCEPTED'
+}
+
+app.get('/dms/:userId', async (c) => {
+  const me = c.get('userId')
+  const them = c.req.param('userId')
+  if (!(await areConnected(c.env.DB, me, them))) {
+    return c.json({ error: 'connect first' }, 403)
+  }
+  const [lo, hi] = pairKey(me, them)
+  const rows = await c.env.DB.prepare(
+    `select m.id, m.sender_id, m.body, m.created_at, u.display_name as sender_name
+       from direct_messages m join users u on u.id = m.sender_id
+      where m.user_lo = ? and m.user_hi = ? order by m.created_at asc limit 200`,
+  )
+    .bind(lo, hi)
+    .all()
+  return c.json(rows.results)
+})
+
+app.post('/dms/:userId', async (c) => {
+  if (!(await rateLimit(c, 'dm', 60, 300))) {
+    return c.json({ error: 'too many messages — slow down' }, 429)
+  }
+  const me = c.get('userId')
+  const them = c.req.param('userId')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const bodyCheck = validateString(b.body, LIMITS.message_body)
+  if (!bodyCheck.ok) return c.json({ error: 'message must be 1-1000 chars' }, 400)
+  if (await isBlockedBetween(c.env.DB, me, them)) return c.json({ error: 'unavailable' }, 403)
+  if (!(await areConnected(c.env.DB, me, them))) return c.json({ error: 'connect first' }, 403)
+  const [lo, hi] = pairKey(me, them)
+  await c.env.DB.prepare(
+    `insert into direct_messages (id, user_lo, user_hi, sender_id, body) values (?, ?, ?, ?, ?)`,
+  )
+    .bind(crypto.randomUUID(), lo, hi, me, bodyCheck.value)
+    .run()
+  fireAndForget(
+    c,
+    notifyUser(
+      c,
+      them,
+      { title: 'New message', body: 'A connection sent you a message.', url: '/' },
+      { urgency: 'normal' },
+    ),
+  )
+  return c.json({ ok: true }, 201)
+})
+
+/* ===================== UNREAD / READ MARKERS ==================== */
+// One badge across every thread the user is part of: direct messages, gig
+// threads, and review-resolution threads — plus connection requests awaiting them.
+
+app.post('/reads', async (c) => {
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const scope = String(b.scope ?? '')
+  const scopeId = b.scope_id != null ? String(b.scope_id) : ''
+  if (!['dm', 'gig', 'review'].includes(scope) || !scopeId) {
+    return c.json({ error: 'bad scope' }, 400)
+  }
+  await c.env.DB.prepare(
+    `insert into message_reads (user_id, scope, scope_id, last_read_at)
+       values (?, ?, ?, datetime('now'))
+     on conflict(user_id, scope, scope_id) do update set last_read_at = datetime('now')`,
+  )
+    .bind(c.get('userId'), scope, scopeId)
+    .run()
+  return c.json({ ok: true })
+})
+
+app.get('/me/unread', async (c) => {
+  return c.json(await unreadCounts(c.env.DB, c.get('userId')))
+})
+
+// Unread across every thread the user is part of, grouped per thread (so the UI
+// can mark which conversation is new), plus pending connection requests. A
+// thread is unread when it has messages from someone else newer than the user's
+// last-read marker (or with no marker yet). Shared by GET /me/unread and the
+// push-badge payload.
+async function unreadCounts(db: D1Database, u: string) {
+  const [dmR, gigR, revR, reqR] = await db.batch([
+    db
+      .prepare(
+        // group by the full expression, not the alias — "id" would bind to the
+        // direct_messages.id column and split every message into its own group.
+        `select case when m.user_lo = ? then m.user_hi else m.user_lo end as id, count(*) as n
+           from direct_messages m
+           left join message_reads r on r.user_id = ? and r.scope = 'dm'
+             and r.scope_id = case when m.user_lo = ? then m.user_hi else m.user_lo end
+          where (m.user_lo = ? or m.user_hi = ?) and m.sender_id <> ?
+            and (r.last_read_at is null or m.created_at > r.last_read_at)
+          group by case when m.user_lo = ? then m.user_hi else m.user_lo end`,
+      )
+      .bind(u, u, u, u, u, u, u),
+    db
+      .prepare(
+        `select m.gig_id as id, count(*) as n from gig_messages m
+           join gigs g on g.id = m.gig_id
+           left join message_reads r on r.user_id = ? and r.scope = 'gig' and r.scope_id = m.gig_id
+          where (g.posted_by = ? or g.claimed_by = ?) and m.sender_id <> ?
+            and (r.last_read_at is null or m.created_at > r.last_read_at)
+          group by m.gig_id`,
+      )
+      .bind(u, u, u, u),
+    db
+      .prepare(
+        `select m.review_id as id, count(*) as n from review_messages m
+           join reviews rv on rv.id = m.review_id
+           left join message_reads r on r.user_id = ? and r.scope = 'review' and r.scope_id = m.review_id
+          where (rv.author_id = ? or rv.subject_id = ?) and m.sender_id <> ?
+            and (r.last_read_at is null or m.created_at > r.last_read_at)
+          group by m.review_id`,
+      )
+      .bind(u, u, u, u),
+    db
+      .prepare(
+        `select count(*) as n from connections where addressee_id = ? and status = 'PENDING'`,
+      )
+      .bind(u),
+  ])
+  const toMap = (res: any) => {
+    const map: Record<string, number> = {}
+    let sum = 0
+    for (const row of res.results as any[]) {
+      map[row.id] = Number(row.n)
+      sum += Number(row.n)
+    }
+    return { map, sum }
+  }
+  const dm = toMap(dmR)
+  const gig = toMap(gigR)
+  const rev = toMap(revR)
+  const requests = Number((reqR.results as any[])[0]?.n ?? 0)
+  const messages = dm.sum + gig.sum + rev.sum
+  return {
+    unread: messages + requests,
+    messages,
+    requests,
+    threads: { dm: dm.map, gig: gig.map, review: rev.map },
+  }
+}
+
 app.get('/users/:id/reviews', async (c) => {
   const limit = clampLimit(c.req.query('limit'))
   const before = parseBefore(c.req.query('before'))
+  await publishExpiredReviews(c.env.DB)
+  // Reviews ABOUT this user that are public — both the work they did (as worker)
+  // and how they treated workers (as hirer). hirer_name is kept for back-compat;
+  // author_name is the actual reviewer in either direction.
   const rows = await c.env.DB.prepare(
     `select r.id, r.gig_id, r.stars, r.body, r.created_at,
             g.task_type, g.neighborhood,
-            hu.display_name as hirer_name
+            au.display_name as hirer_name,
+            au.display_name as author_name
        from reviews r
        join gigs g on g.id = r.gig_id
-       join users hu on hu.id = r.hirer_id
-      where r.worker_id = ? and (? is null or r.created_at < ?)
+       join users au on au.id = r.author_id
+      where r.subject_id = ? and r.status = 'PUBLISHED' and (? is null or r.created_at < ?)
       order by r.created_at desc
       limit ?`,
   )
