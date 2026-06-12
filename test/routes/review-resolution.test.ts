@@ -130,6 +130,79 @@ describe('revise (up only) and withdraw', () => {
   })
 })
 
+describe('resolution thread', () => {
+  it('both parties can post and read; a subject reply records engagement', async () => {
+    const { hirer, worker, gid } = await claimedGig()
+    await complete(gid, hirer.token, 1, 'please confirm timing next time')
+    const mine = await call('/reviews/resolving', {}, hirer.token)
+    const rid = mine.body.authored[0].id
+
+    // author opens the conversation
+    expect(
+      (
+        await call(
+          `/reviews/${rid}/messages`,
+          { method: 'POST', body: JSON.stringify({ body: 'happy to explain' }) },
+          hirer.token,
+        )
+      ).status,
+    ).toBe(201)
+    // subject (worker) replies — folds in acknowledgement
+    expect(
+      (
+        await call(
+          `/reviews/${rid}/messages`,
+          { method: 'POST', body: JSON.stringify({ body: 'understood, will do' }) },
+          worker.token,
+        )
+      ).status,
+    ).toBe(201)
+    const thread = await call(`/reviews/${rid}/messages`, {}, worker.token)
+    expect(thread.body).toHaveLength(2)
+    const after = await call('/reviews/resolving', {}, hirer.token)
+    expect(after.body.authored[0].responded).toBe(1)
+  })
+
+  it('a non-party cannot read or post (404)', async () => {
+    const { hirer, gid } = await claimedGig()
+    const stranger = await register('Nosy')
+    await complete(gid, hirer.token, 2, 'note')
+    const mine = await call('/reviews/resolving', {}, hirer.token)
+    const rid = mine.body.authored[0].id
+    expect((await call(`/reviews/${rid}/messages`, {}, stranger.token)).status).toBe(404)
+    expect(
+      (
+        await call(
+          `/reviews/${rid}/messages`,
+          { method: 'POST', body: JSON.stringify({ body: 'hi' }) },
+          stranger.token,
+        )
+      ).status,
+    ).toBe(404)
+  })
+
+  it('cannot post once the review is no longer in resolution (409)', async () => {
+    const { hirer, gid } = await claimedGig()
+    await complete(gid, hirer.token, 2)
+    const mine = await call('/reviews/resolving', {}, hirer.token)
+    const rid = mine.body.authored[0].id
+    await call(
+      `/reviews/${rid}/revise`,
+      { method: 'POST', body: JSON.stringify({ rating: 4 }) },
+      hirer.token,
+    )
+    expect(
+      (
+        await call(
+          `/reviews/${rid}/messages`,
+          { method: 'POST', body: JSON.stringify({ body: 'too late' }) },
+          hirer.token,
+        )
+      ).status,
+    ).toBe(409)
+  })
+})
+
 describe('worker reviews the hirer', () => {
   it('is allowed after marking done, even if the hirer never completes', async () => {
     const { hirer, worker, gid } = await claimedGig()

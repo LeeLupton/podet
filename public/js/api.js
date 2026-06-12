@@ -92,6 +92,9 @@ export const api = {
     request(`/reviews/${id}/revise`, { method: 'POST', body: { rating } }),
   withdrawReview: (id) => request(`/reviews/${id}/withdraw`, { method: 'POST' }),
   acknowledgeReview: (id) => request(`/reviews/${id}/acknowledge`, { method: 'POST' }),
+  reviewMessages: (id) => request(`/reviews/${id}/messages`),
+  sendReviewMessage: (id, body) =>
+    request(`/reviews/${id}/messages`, { method: 'POST', body: { body } }),
 
   // Board
   posts: (before) => request(`/posts${before ? `?before=${encodeURIComponent(before)}` : ''}`),

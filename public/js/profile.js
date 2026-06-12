@@ -187,22 +187,7 @@ function resolutionBlock(resolving, root) {
           { class: 'hint' },
           `Auto-publishes ${fmtDateTime(r.resolve_deadline)} if unresolved.`,
         ),
-        h(
-          'button',
-          {
-            class: 'btn-ghost',
-            onClick: async () => {
-              try {
-                await api.acknowledgeReview(r.id)
-                toast('Acknowledged — reply in the gig’s messages to talk it through')
-                renderProfile(root)
-              } catch (err) {
-                toast(err instanceof ApiError ? err.message : 'Could not acknowledge', 'error')
-              }
-            },
-          },
-          'Acknowledge',
-        ),
+        reviewThread(r.id),
       ),
     )
   }
@@ -275,8 +260,85 @@ function resolutionBlock(resolving, root) {
       ),
     )
     card.append(actions)
+    card.append(reviewThread(r.id))
     wrap.append(card)
   }
+  return wrap
+}
+
+// The resolution conversation for one held review — a self-contained, collapsible
+// thread. Loads lazily on open; the subject simply replying records engagement.
+function reviewThread(reviewId) {
+  const wrap = h('div', { class: 'msg-wrap' })
+  const list = h('div', { class: 'comments hidden' })
+  const input = h('input', {
+    class: 'input',
+    type: 'text',
+    maxlength: '1000',
+    placeholder: 'Talk it through…',
+  })
+  const sendBtn = h('button', { class: 'btn-ghost', type: 'submit' }, 'Send')
+  const form = h(
+    'form',
+    {
+      class: 'comment-form hidden',
+      onSubmit: async (e) => {
+        e.preventDefault()
+        const text = input.value.trim()
+        if (!text) return
+        sendBtn.disabled = true
+        try {
+          await api.sendReviewMessage(reviewId, text)
+          input.value = ''
+          await loadThread()
+        } catch (err) {
+          toast(err instanceof ApiError ? err.message : 'Could not send', 'error')
+        } finally {
+          sendBtn.disabled = false
+        }
+      },
+    },
+    input,
+    sendBtn,
+  )
+
+  async function loadThread() {
+    try {
+      const msgs = await api.reviewMessages(reviewId)
+      clear(list)
+      if (!msgs.length)
+        list.append(h('div', { class: 'gig-meta' }, 'No messages yet — open the conversation.'))
+      for (const m of msgs) {
+        list.append(
+          h(
+            'div',
+            { class: 'comment' },
+            h('span', { class: 'comment-author' }, m.sender_name || 'Someone'),
+            h('span', { class: 'comment-body' }, m.body),
+            h('span', { class: 'comment-date' }, fmtDate(m.created_at)),
+          ),
+        )
+      }
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Could not load the conversation', 'error')
+    }
+  }
+
+  const toggle = h(
+    'button',
+    {
+      class: 'btn-ghost',
+      onClick: async () => {
+        const closing = !list.classList.contains('hidden')
+        list.classList.toggle('hidden', closing)
+        form.classList.toggle('hidden', closing)
+        toggle.textContent = closing ? 'Open conversation' : 'Hide conversation'
+        if (!closing) await loadThread()
+      },
+    },
+    'Open conversation',
+  )
+  wrap.append(toggle, list, form)
   return wrap
 }
 

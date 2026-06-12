@@ -139,6 +139,19 @@ create table if not exists gig_messages (
 
 create index if not exists idx_gig_messages_gig on gig_messages(gig_id);
 
+-- REVIEW MESSAGES — the private resolution thread for a held (RESOLVING) review,
+-- between its author and subject. Separate from gig_messages so the improvement
+-- conversation is tied to the review itself, not buried in gig coordination.
+create table if not exists review_messages (
+  id         text primary key,
+  review_id  text not null references reviews(id) on delete cascade,
+  sender_id  text not null references users(id),
+  body       text not null,
+  created_at text not null default (datetime('now'))
+);
+
+create index if not exists idx_review_messages_review on review_messages(review_id);
+
 -- REPORTS — content/user reports, verification requests, and support tickets.
 create table if not exists reports (
   id          text primary key,

@@ -911,6 +911,79 @@ app.post('/reviews/:id/acknowledge', async (c) => {
   return c.json({ ok: true })
 })
 
+// The resolution thread — a private channel between a held review's author and
+// subject, the place the improvement conversation actually happens. Loaded by
+// either party; readable while the review exists (so they can see how it was
+// settled). Unlike gig messages it is NOT sealed by a block: it is bounded to
+// one held review and is the constructive path, not open DMs.
+async function reviewForThread(
+  db: D1Database,
+  reviewId: string,
+  userId: string,
+): Promise<any | null> {
+  const r: any = await db
+    .prepare('select id, author_id, subject_id, status from reviews where id = ?')
+    .bind(reviewId)
+    .first()
+  if (!r || (r.author_id !== userId && r.subject_id !== userId)) return null
+  return r
+}
+
+app.get('/reviews/:id/messages', async (c) => {
+  const userId = c.get('userId')
+  const review = await reviewForThread(c.env.DB, c.req.param('id'), userId)
+  if (!review) return c.json({ error: 'not found' }, 404)
+  const rows = await c.env.DB.prepare(
+    `select m.id, m.sender_id, m.body, m.created_at, u.display_name as sender_name
+       from review_messages m join users u on u.id = m.sender_id
+      where m.review_id = ? order by m.created_at asc limit 200`,
+  )
+    .bind(review.id)
+    .all()
+  return c.json(rows.results)
+})
+
+app.post('/reviews/:id/messages', async (c) => {
+  if (!(await rateLimit(c, 'review-msg', 60, 300))) {
+    return c.json({ error: 'too many messages — slow down' }, 429)
+  }
+  const userId = c.get('userId')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const bodyCheck = validateString(b.body, LIMITS.message_body)
+  if (!bodyCheck.ok) return c.json({ error: 'message must be 1-1000 chars' }, 400)
+  const review = await reviewForThread(c.env.DB, c.req.param('id'), userId)
+  if (!review) return c.json({ error: 'not found' }, 404)
+  if (review.status !== 'RESOLVING') {
+    return c.json({ error: 'this review is no longer in resolution' }, 409)
+  }
+  const stmts = [
+    c.env.DB.prepare(
+      `insert into review_messages (id, review_id, sender_id, body) values (?, ?, ?, ?)`,
+    ).bind(crypto.randomUUID(), review.id, userId, bodyCheck.value),
+  ]
+  // The subject participating IS engagement — fold acknowledgement into it.
+  if (review.subject_id === userId && !review.responded) {
+    stmts.push(c.env.DB.prepare(`update reviews set responded = 1 where id = ?`).bind(review.id))
+  }
+  await c.env.DB.batch(stmts)
+  const other = review.author_id === userId ? review.subject_id : review.author_id
+  fireAndForget(
+    c,
+    notifyUser(
+      c,
+      other,
+      { title: 'New message about a review', body: 'Tap to continue the conversation.', url: '/' },
+      { topic: topicFor(review.id), urgency: 'normal' },
+    ),
+  )
+  return c.json({ ok: true }, 201)
+})
+
 // Edit your own gig — only while AVAILABLE (can't change a gig someone's working).
 app.put('/gigs/:id', async (c) => {
   const userId = c.get('userId')

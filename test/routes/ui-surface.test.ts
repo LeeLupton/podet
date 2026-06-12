@@ -188,6 +188,63 @@ describe('UI surface sweep (no 404/500 from any api.js route)', () => {
       ).status,
     )
     check('GET /reviews/resolving', (await call('/reviews/resolving', {}, a.token)).status)
+    // Resolution thread: hold a 1★ review, then exercise its message routes.
+    const gidR = await postGig(a.token)
+    await claim(gidR, b.token)
+    await call(
+      `/gigs/${gidR}/complete`,
+      { method: 'POST', body: JSON.stringify({ rating: 1, review: 'held' }) },
+      a.token,
+    )
+    const heldList = await call('/reviews/resolving', {}, a.token)
+    const heldId = heldList.body.authored[0].id
+    check(
+      'POST /reviews/:id/messages',
+      (
+        await call(
+          `/reviews/${heldId}/messages`,
+          { method: 'POST', body: JSON.stringify({ body: 'sweep' }) },
+          a.token,
+        )
+      ).status,
+    )
+    check(
+      'GET /reviews/:id/messages',
+      (await call(`/reviews/${heldId}/messages`, {}, a.token)).status,
+    )
+    check(
+      'POST /reviews/:id/acknowledge',
+      (await call(`/reviews/${heldId}/acknowledge`, { method: 'POST' }, b.token)).status,
+    )
+    check(
+      'POST /reviews/:id/revise',
+      (
+        await call(
+          `/reviews/${heldId}/revise`,
+          { method: 'POST', body: JSON.stringify({ rating: 4 }) },
+          a.token,
+        )
+      ).status,
+    )
+    // a second held review to exercise withdraw
+    const gidW = await postGig(a.token)
+    await claim(gidW, b.token)
+    await call(
+      `/gigs/${gidW}/complete`,
+      { method: 'POST', body: JSON.stringify({ rating: 1 }) },
+      a.token,
+    )
+    const heldList2 = await call('/reviews/resolving', {}, a.token)
+    check(
+      'POST /reviews/:id/withdraw',
+      (
+        await call(
+          `/reviews/${heldList2.body.authored[0].id}/withdraw`,
+          { method: 'POST' },
+          a.token,
+        )
+      ).status,
+    )
     check(
       'POST /reports',
       (
