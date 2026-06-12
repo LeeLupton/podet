@@ -28,6 +28,51 @@ function unreadDot(n) {
   return n > 0 ? h('span', { class: 'unread-dot' }, n > 9 ? '9+' : String(n)) : null
 }
 
+// Visual break between the "activity" half of the Me view and the settings half.
+function settingsDivider() {
+  return h('div', { class: 'settings-divider' }, h('h2', { class: 'settings-head' }, 'Settings'))
+}
+
+// Appearance — theme choice (System / Light / Dark), persisted by theme.js.
+function appearanceBlock() {
+  const theme = window.podnetTheme
+  const wrap = h(
+    'div',
+    { class: 'me-section' },
+    h('h2', { class: 'section-title' }, 'Appearance'),
+    h('p', { class: 'hint' }, 'How PodNet looks. System follows your device.'),
+  )
+  const seg = h('div', { class: 'seg' })
+  const current = theme?.get?.() ?? 'system'
+  const paint = (sel) => {
+    for (const b of seg.children) b.classList.toggle('seg-on', b.dataset.val === sel)
+  }
+  for (const [val, label] of [
+    ['system', 'System'],
+    ['light', 'Light'],
+    ['dark', 'Dark'],
+  ]) {
+    seg.append(
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'seg-btn',
+          dataset: { val },
+          onClick: () => {
+            theme?.set?.(val)
+            paint(val)
+          },
+        },
+        label,
+      ),
+    )
+  }
+  paint(current)
+  wrap.append(seg)
+  return wrap
+}
+
 // main.js sets these so logout returns to the gate and "Edit" opens the gig form.
 let onLoggedOut = null
 export function setOnLoggedOut(fn) {
@@ -62,19 +107,23 @@ async function load(root) {
     ])
     const profile = { ...pub, ...self, average_rating: pub.average_rating }
     clear(root)
+    // Activity — what's happening now.
     root.append(headerBlock(me, profile))
     const resolution = resolutionBlock(resolving, root)
     if (resolution) root.append(resolution)
     root.append(moneyBlock(mine))
-    root.append(notificationsBlock())
-    root.append(businessBlock(profile))
+    root.append(gigsBlock(mine, root))
     root.append(propertiesBlock())
     root.append(neighborsBlock())
-    root.append(changePasswordBlock())
-    root.append(gigsBlock(mine, root))
     root.append(reviewsBlock(reviews, me.id))
-    root.append(supportBlock())
+    // Settings — everything you configure, gathered in one place.
+    root.append(settingsDivider())
+    root.append(appearanceBlock())
+    root.append(notificationsBlock())
+    root.append(businessBlock(profile))
+    root.append(changePasswordBlock())
     root.append(blocksBlock())
+    root.append(supportBlock())
     if (profile.is_admin) root.append(adminBlock(root))
     root.append(dangerBlock(root))
   } catch (err) {

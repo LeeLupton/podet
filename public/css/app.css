@@ -1,11 +1,26 @@
-/* Theme tokens — defined once. */
-:root {
+/* Theme tokens. Dark is the default (and the no-JS fallback); theme.js sets
+   data-theme="light"|"dark" on <html> from the user's choice (System resolves to
+   one of the two before paint, so there's no flash). */
+:root,
+[data-theme="dark"] {
   --bg: #0e1410;
   --panel: #161e18;
   --border: #2a3530;
   --accent: #7cb342;
+  --accent-ink: #0c130a; /* text/icons drawn on top of --accent */
+  --accent-soft: rgba(124, 179, 66, 0.12);
   --warning: #f59e0b;
   --text: #d8e0d8;
+}
+[data-theme="light"] {
+  --bg: #f3f5f1;
+  --panel: #ffffff;
+  --border: #d6ddd2;
+  --accent: #4f7a25;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(79, 122, 37, 0.12);
+  --warning: #b45309;
+  --text: #1b241a;
 }
 
 * {
@@ -159,7 +174,7 @@ textarea.input {
 .btn-primary {
   min-height: 48px;
   background: var(--accent);
-  color: #0c130a;
+  color: var(--accent-ink);
   font-weight: 700;
   font-size: 16px;
   border: none;
@@ -200,7 +215,7 @@ textarea.input {
   border-color: var(--accent);
 }
 .btn-ghost:active:not(:disabled) {
-  background: rgba(124, 179, 66, 0.08);
+  background: var(--accent-soft);
 }
 .btn-ghost.on {
   border-color: var(--accent);
@@ -287,7 +302,7 @@ textarea.input {
 .pill-neighbor {
   color: var(--accent);
   border-color: var(--accent);
-  background: rgba(124, 179, 66, 0.12);
+  background: var(--accent-soft);
 }
 
 /* Feed header / radius slider */
@@ -700,7 +715,7 @@ textarea.input {
   padding: 0 5px;
   border-radius: 9px;
   background: var(--accent);
-  color: #0c130a;
+  color: var(--accent-ink);
   font-size: 11px;
   font-weight: 700;
   line-height: 18px;
@@ -717,11 +732,50 @@ textarea.input {
   padding: 0 5px;
   border-radius: 9px;
   background: var(--accent);
-  color: #0c130a;
+  color: var(--accent-ink);
   font-size: 11px;
   font-weight: 700;
   line-height: 18px;
   text-align: center;
+}
+
+/* Settings */
+.settings-divider {
+  margin-top: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.settings-head {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.6;
+  margin: 0;
+}
+.seg {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.seg-btn {
+  flex: 1;
+  min-height: 40px;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-right: 1px solid var(--border);
+  font-size: 14px;
+  cursor: pointer;
+}
+.seg-btn:last-child {
+  border-right: none;
+}
+.seg-btn.seg-on {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 700;
 }
 
 /* Toasts */
