@@ -58,6 +58,17 @@ describe('unread badge count', () => {
     expect(u.body.unread).toBe(1)
   })
 
+  it('returns a per-thread breakdown so the UI can mark which conversation is new', async () => {
+    const a = await register('A')
+    const b = await register('B')
+    await connectPair(a, b)
+    await call(`/dms/${b.id}`, { method: 'POST', body: JSON.stringify({ body: 'one' }) }, a.token)
+    await call(`/dms/${b.id}`, { method: 'POST', body: JSON.stringify({ body: 'two' }) }, a.token)
+    const u = await call('/me/unread', {}, b.token)
+    expect(u.body.threads.dm[a.id]).toBe(2)
+    expect(u.body.messages).toBe(2)
+  })
+
   it('rejects a bad scope (400)', async () => {
     const a = await register('A')
     expect(

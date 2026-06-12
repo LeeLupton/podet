@@ -16,18 +16,34 @@ export function mountUnreadBadge(tabBtn) {
   tabBtn.appendChild(badgeEl)
 }
 
+// The latest per-thread breakdown, so the Me view can mark which conversation
+// is new. Refreshed alongside the badge.
+let latest = { unread: 0, threads: { dm: {}, gig: {}, review: {} } }
+export function unreadThreads() {
+  return latest.threads
+}
+
+// Mirror the unread total onto the installed-PWA OS app badge, when supported.
+function setOsBadge(n) {
+  if (!('setAppBadge' in navigator)) return
+  if (n > 0) navigator.setAppBadge(n).catch(() => {})
+  else navigator.clearAppBadge?.().catch(() => {})
+}
+
 export async function refreshUnread() {
-  if (!badgeEl) return
   try {
-    const { unread } = await api.unread()
-    if (unread > 0) {
-      badgeEl.textContent = unread > 99 ? '99+' : String(unread)
-      badgeEl.classList.remove('hidden')
-    } else {
-      badgeEl.classList.add('hidden')
-    }
+    latest = await api.unread()
   } catch {
-    // transient — leave the badge as-is
+    return // transient — leave the badge as-is
+  }
+  const { unread } = latest
+  setOsBadge(unread)
+  if (!badgeEl) return
+  if (unread > 0) {
+    badgeEl.textContent = unread > 99 ? '99+' : String(unread)
+    badgeEl.classList.remove('hidden')
+  } else {
+    badgeEl.classList.add('hidden')
   }
 }
 
@@ -54,5 +70,7 @@ export function stopUnreadPolling() {
     clearInterval(timer)
     timer = null
   }
+  latest = { unread: 0, threads: { dm: {}, gig: {}, review: {} } }
+  setOsBadge(0)
   if (badgeEl) badgeEl.classList.add('hidden')
 }

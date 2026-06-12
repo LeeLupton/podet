@@ -1,11 +1,43 @@
-# PodNet — Neighborhood Gig & Improvement Board
+<div align="center">
 
-A mobile-first web app for a local community, built entirely on Cloudflare:
+<img src="public/icon.svg" alt="PodNet" width="92" height="92" />
 
-- **Post a gig** (a fixed-cash task) and, as the hirer, inspect and rate the worker who does it.
-- **Claim a gig** posted by someone else and build a reviewed portfolio.
-- **Post to the board** — observations and "wouldn't it look better if…" suggestions that aren't
-  paid tasks but can graduate into one (**Turn into a gig**).
+# PodNet
+
+#### The landscaper-to-landscaper network — routes, neighbors & restorative reviews, built end-to-end on Cloudflare.
+
+<p>
+  <img alt="tests" src="https://img.shields.io/badge/tests-263%20passing-3fb950?style=for-the-badge&logo=vitest&logoColor=white">
+  <img alt="types" src="https://img.shields.io/badge/types-strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white">
+  <img alt="lint" src="https://img.shields.io/badge/lint-Biome-60A5FA?style=for-the-badge&logo=biome&logoColor=white">
+  <img alt="audit" src="https://img.shields.io/badge/npm%20audit-0%20vulns-3fb950?style=for-the-badge&logo=npm&logoColor=white">
+</p>
+<p>
+  <img alt="cloudflare" src="https://img.shields.io/badge/Cloudflare-Pages%20·%20D1%20·%20R2-F38020?style=for-the-badge&logo=cloudflare&logoColor=white">
+  <img alt="hono" src="https://img.shields.io/badge/Hono-API-E36002?style=for-the-badge&logo=hono&logoColor=white">
+  <img alt="sqlite" src="https://img.shields.io/badge/D1-SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white">
+  <img alt="pwa" src="https://img.shields.io/badge/PWA-installable-5A0FC8?style=for-the-badge&logo=pwa&logoColor=white">
+</p>
+<p>
+  <img alt="no build step" src="https://img.shields.io/badge/build%20step-none-7cb342?style=for-the-badge">
+  <img alt="web push" src="https://img.shields.io/badge/web%20push-VAPID-7cb342?style=for-the-badge&logo=webpush&logoColor=white">
+  <img alt="one-command deploy" src="https://img.shields.io/badge/deploy-one%20command-7cb342?style=for-the-badge">
+  <img alt="license" src="https://img.shields.io/badge/license-Unlicense-blue?style=for-the-badge">
+</p>
+
+</div>
+
+---
+
+A mobile-first web app where landscapers find the crews whose routes touch theirs, coordinate
+work, and build a portfolio of reviewed jobs — on a trust model designed against abuse from the
+ground up. Built entirely on Cloudflare, with **no build step** and a **one-command deploy**.
+
+- **Routes & neighbors** — register the properties on your route; discover and connect with
+  adjacent landscapers, then message them directly.
+- **Gigs** — post a fixed-cash task or claim one; both sides review each other (restoratively).
+- **Board** — observations and "wouldn't it look better if…" notes that can graduate into a gig
+  (**Turn into a gig**).
 
 There is no privileged "crew leader" role: the person who posts and pays for a gig is the one who
 rates it. Authority is per-gig ownership, not an account type.
@@ -27,7 +59,8 @@ the Pages Functions API touches it.
 
 ## Stack
 
-- **Frontend:** HTML5 + vanilla JS (ES modules) + Tailwind v3 Play CDN. No build step.
+- **Frontend:** HTML5 + vanilla JS (ES modules); hand-written CSS in `public/css/app.css` under a
+  strict CSP (`script-src 'self'; style-src 'self'`). No build step, no framework, no CDN.
 - **API:** Cloudflare Pages Functions (Workers runtime) with [Hono](https://hono.dev). D1 via `env.DB`.
 - **DB:** Cloudflare D1 (SQLite).
 - **Auth:** email/password handled in the API — PBKDF2-HMAC-SHA256 via Web Crypto, JWT sessions.

@@ -113,7 +113,16 @@ async function notifyUser(
   )
     .bind(userId)
     .all()
-  const body = JSON.stringify(payload)
+  if (!(subs.results as any[]).length) return
+  // Carry the recipient's current unread total so the service worker can set the
+  // OS app badge (the message was already inserted before this call).
+  let withBadge = payload
+  try {
+    withBadge = { ...payload, badge: (await unreadCounts(c.env.DB, userId)).unread }
+  } catch {
+    // best-effort — never block the push on the badge count
+  }
+  const body = JSON.stringify(withBadge)
   const subject = c.env.VAPID_SUBJECT || 'mailto:podnet@example.com'
   await Promise.all(
     (subs.results as any[]).map(async (s) => {
@@ -2073,39 +2082,76 @@ app.post('/reads', async (c) => {
 })
 
 app.get('/me/unread', async (c) => {
-  const u = c.get('userId')
-  const [dmR, gigR, revR, reqR] = await c.env.DB.batch([
-    // DM threads: the marker's scope_id is the OTHER party (relative to me).
-    c.env.DB.prepare(
-      `select count(*) as n from direct_messages m
-         left join message_reads r on r.user_id = ? and r.scope = 'dm'
-           and r.scope_id = case when m.user_lo = ? then m.user_hi else m.user_lo end
-        where (m.user_lo = ? or m.user_hi = ?) and m.sender_id <> ?
-          and (r.last_read_at is null or m.created_at > r.last_read_at)`,
-    ).bind(u, u, u, u, u),
-    c.env.DB.prepare(
-      `select count(*) as n from gig_messages m
-         join gigs g on g.id = m.gig_id
-         left join message_reads r on r.user_id = ? and r.scope = 'gig' and r.scope_id = m.gig_id
-        where (g.posted_by = ? or g.claimed_by = ?) and m.sender_id <> ?
-          and (r.last_read_at is null or m.created_at > r.last_read_at)`,
-    ).bind(u, u, u, u),
-    c.env.DB.prepare(
-      `select count(*) as n from review_messages m
-         join reviews rv on rv.id = m.review_id
-         left join message_reads r on r.user_id = ? and r.scope = 'review' and r.scope_id = m.review_id
-        where (rv.author_id = ? or rv.subject_id = ?) and m.sender_id <> ?
-          and (r.last_read_at is null or m.created_at > r.last_read_at)`,
-    ).bind(u, u, u, u),
-    c.env.DB.prepare(
-      `select count(*) as n from connections where addressee_id = ? and status = 'PENDING'`,
-    ).bind(u),
-  ])
-  const n = (res: any) => Number((res.results as any[])[0]?.n ?? 0)
-  const messages = n(dmR) + n(gigR) + n(revR)
-  const requests = n(reqR)
-  return c.json({ unread: messages + requests, messages, requests })
+  return c.json(await unreadCounts(c.env.DB, c.get('userId')))
 })
+
+// Unread across every thread the user is part of, grouped per thread (so the UI
+// can mark which conversation is new), plus pending connection requests. A
+// thread is unread when it has messages from someone else newer than the user's
+// last-read marker (or with no marker yet). Shared by GET /me/unread and the
+// push-badge payload.
+async function unreadCounts(db: D1Database, u: string) {
+  const [dmR, gigR, revR, reqR] = await db.batch([
+    db
+      .prepare(
+        // group by the full expression, not the alias — "id" would bind to the
+        // direct_messages.id column and split every message into its own group.
+        `select case when m.user_lo = ? then m.user_hi else m.user_lo end as id, count(*) as n
+           from direct_messages m
+           left join message_reads r on r.user_id = ? and r.scope = 'dm'
+             and r.scope_id = case when m.user_lo = ? then m.user_hi else m.user_lo end
+          where (m.user_lo = ? or m.user_hi = ?) and m.sender_id <> ?
+            and (r.last_read_at is null or m.created_at > r.last_read_at)
+          group by case when m.user_lo = ? then m.user_hi else m.user_lo end`,
+      )
+      .bind(u, u, u, u, u, u, u),
+    db
+      .prepare(
+        `select m.gig_id as id, count(*) as n from gig_messages m
+           join gigs g on g.id = m.gig_id
+           left join message_reads r on r.user_id = ? and r.scope = 'gig' and r.scope_id = m.gig_id
+          where (g.posted_by = ? or g.claimed_by = ?) and m.sender_id <> ?
+            and (r.last_read_at is null or m.created_at > r.last_read_at)
+          group by m.gig_id`,
+      )
+      .bind(u, u, u, u),
+    db
+      .prepare(
+        `select m.review_id as id, count(*) as n from review_messages m
+           join reviews rv on rv.id = m.review_id
+           left join message_reads r on r.user_id = ? and r.scope = 'review' and r.scope_id = m.review_id
+          where (rv.author_id = ? or rv.subject_id = ?) and m.sender_id <> ?
+            and (r.last_read_at is null or m.created_at > r.last_read_at)
+          group by m.review_id`,
+      )
+      .bind(u, u, u, u),
+    db
+      .prepare(
+        `select count(*) as n from connections where addressee_id = ? and status = 'PENDING'`,
+      )
+      .bind(u),
+  ])
+  const toMap = (res: any) => {
+    const map: Record<string, number> = {}
+    let sum = 0
+    for (const row of res.results as any[]) {
+      map[row.id] = Number(row.n)
+      sum += Number(row.n)
+    }
+    return { map, sum }
+  }
+  const dm = toMap(dmR)
+  const gig = toMap(gigR)
+  const rev = toMap(revR)
+  const requests = Number((reqR.results as any[])[0]?.n ?? 0)
+  const messages = dm.sum + gig.sum + rev.sum
+  return {
+    unread: messages + requests,
+    messages,
+    requests,
+    threads: { dm: dm.map, gig: gig.map, review: rev.map },
+  }
+}
 
 app.get('/users/:id/reviews', async (c) => {
   const limit = clampLimit(c.req.query('limit'))

@@ -21,7 +21,12 @@ import {
   starsText,
   toast,
 } from './ui.js'
-import { markThreadRead } from './unread.js'
+import { markThreadRead, refreshUnread, unreadThreads } from './unread.js'
+
+// A small "N new" marker for an unread thread (or null when there's nothing new).
+function unreadDot(n) {
+  return n > 0 ? h('span', { class: 'unread-dot' }, n > 9 ? '9+' : String(n)) : null
+}
 
 // main.js sets these so logout returns to the gate and "Edit" opens the gig form.
 let onLoggedOut = null
@@ -53,6 +58,7 @@ async function load(root) {
       api.userReviews(me.id),
       api.myGigs(),
       api.resolvingReviews(),
+      refreshUnread(), // refresh the per-thread unread snapshot before drawing markers
     ])
     const profile = { ...pub, ...self, average_rating: pub.average_rating }
     clear(root)
@@ -336,6 +342,7 @@ function reviewThread(reviewId) {
     }
   }
 
+  const dot = unreadDot(unreadThreads().review?.[reviewId] ?? 0)
   const toggle = h(
     'button',
     {
@@ -345,6 +352,7 @@ function reviewThread(reviewId) {
         list.classList.toggle('hidden', closing)
         form.classList.toggle('hidden', closing)
         toggle.textContent = closing ? 'Open conversation' : 'Hide conversation'
+        if (dot) dot.remove()
         if (!closing) {
           await loadThread()
           markThreadRead('review', reviewId)
@@ -353,7 +361,7 @@ function reviewThread(reviewId) {
     },
     'Open conversation',
   )
-  wrap.append(toggle, list, form)
+  wrap.append(h('div', { class: 'thread-head' }, toggle, dot), list, form)
   return wrap
 }
 
@@ -798,6 +806,7 @@ function messagesThread(g) {
   }
 
   const label = g.message_count > 0 ? `Messages (${g.message_count})` : 'Messages'
+  const dot = unreadDot(unreadThreads().gig?.[g.id] ?? 0)
   const toggle = h(
     'button',
     {
@@ -806,6 +815,7 @@ function messagesThread(g) {
         const open = list.classList.toggle('hidden')
         form.classList.toggle('hidden', open)
         toggle.textContent = open ? label : 'Hide messages'
+        if (dot) dot.remove()
         if (!open) {
           await loadThread()
           markThreadRead('gig', g.id)
@@ -814,7 +824,7 @@ function messagesThread(g) {
     },
     label,
   )
-  wrap.append(toggle, list, form)
+  wrap.append(h('div', { class: 'thread-head' }, toggle, dot), list, form)
   return wrap
 }
 
@@ -1148,10 +1158,16 @@ function neighborsBlock() {
       if (conns.connected.length) {
         connectedWrap.append(h('h3', { class: 'subhead' }, 'Connected'))
         for (const u of conns.connected) {
+          const newCount = unreadThreads().dm?.[u.id] ?? 0
+          const msgBtn = btn(
+            newCount ? `Message · ${newCount > 9 ? '9+' : newCount} new` : 'Message',
+            newCount ? 'btn-ghost on' : 'btn-ghost',
+            () => openDmThread(u.id, u.display_name || 'Neighbor'),
+          )
           connectedWrap.append(
             row(
               u,
-              btn('Message', 'btn-ghost', () => openDmThread(u.id, u.display_name || 'Neighbor')),
+              msgBtn,
               btn('Disconnect', 'link-btn danger', async () => {
                 await api.disconnect(u.id).catch(() => {})
                 reload()

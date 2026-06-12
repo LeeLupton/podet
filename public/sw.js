@@ -7,14 +7,19 @@ self.addEventListener('push', (event) => {
   } catch {
     if (event.data) data.body = event.data.text()
   }
-  event.waitUntil(
+  const tasks = [
     self.registration.showNotification(data.title || 'PodNet', {
       body: data.body || '',
       icon: '/icon.png',
       badge: '/icon.png',
       data: { url: data.url || '/' },
     }),
-  )
+  ]
+  // Mirror the unread count onto the OS app badge (installed PWA), if supported.
+  if (typeof self.navigator?.setAppBadge === 'function' && typeof data.badge === 'number') {
+    tasks.push(self.navigator.setAppBadge(data.badge).catch(() => {}))
+  }
+  event.waitUntil(Promise.all(tasks))
 })
 
 self.addEventListener('notificationclick', (event) => {
