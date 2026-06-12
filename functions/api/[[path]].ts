@@ -2046,6 +2046,67 @@ app.post('/dms/:userId', async (c) => {
   return c.json({ ok: true }, 201)
 })
 
+/* ===================== UNREAD / READ MARKERS ==================== */
+// One badge across every thread the user is part of: direct messages, gig
+// threads, and review-resolution threads — plus connection requests awaiting them.
+
+app.post('/reads', async (c) => {
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const scope = String(b.scope ?? '')
+  const scopeId = b.scope_id != null ? String(b.scope_id) : ''
+  if (!['dm', 'gig', 'review'].includes(scope) || !scopeId) {
+    return c.json({ error: 'bad scope' }, 400)
+  }
+  await c.env.DB.prepare(
+    `insert into message_reads (user_id, scope, scope_id, last_read_at)
+       values (?, ?, ?, datetime('now'))
+     on conflict(user_id, scope, scope_id) do update set last_read_at = datetime('now')`,
+  )
+    .bind(c.get('userId'), scope, scopeId)
+    .run()
+  return c.json({ ok: true })
+})
+
+app.get('/me/unread', async (c) => {
+  const u = c.get('userId')
+  const [dmR, gigR, revR, reqR] = await c.env.DB.batch([
+    // DM threads: the marker's scope_id is the OTHER party (relative to me).
+    c.env.DB.prepare(
+      `select count(*) as n from direct_messages m
+         left join message_reads r on r.user_id = ? and r.scope = 'dm'
+           and r.scope_id = case when m.user_lo = ? then m.user_hi else m.user_lo end
+        where (m.user_lo = ? or m.user_hi = ?) and m.sender_id <> ?
+          and (r.last_read_at is null or m.created_at > r.last_read_at)`,
+    ).bind(u, u, u, u, u),
+    c.env.DB.prepare(
+      `select count(*) as n from gig_messages m
+         join gigs g on g.id = m.gig_id
+         left join message_reads r on r.user_id = ? and r.scope = 'gig' and r.scope_id = m.gig_id
+        where (g.posted_by = ? or g.claimed_by = ?) and m.sender_id <> ?
+          and (r.last_read_at is null or m.created_at > r.last_read_at)`,
+    ).bind(u, u, u, u),
+    c.env.DB.prepare(
+      `select count(*) as n from review_messages m
+         join reviews rv on rv.id = m.review_id
+         left join message_reads r on r.user_id = ? and r.scope = 'review' and r.scope_id = m.review_id
+        where (rv.author_id = ? or rv.subject_id = ?) and m.sender_id <> ?
+          and (r.last_read_at is null or m.created_at > r.last_read_at)`,
+    ).bind(u, u, u, u),
+    c.env.DB.prepare(
+      `select count(*) as n from connections where addressee_id = ? and status = 'PENDING'`,
+    ).bind(u),
+  ])
+  const n = (res: any) => Number((res.results as any[])[0]?.n ?? 0)
+  const messages = n(dmR) + n(gigR) + n(revR)
+  const requests = n(reqR)
+  return c.json({ unread: messages + requests, messages, requests })
+})
+
 app.get('/users/:id/reviews', async (c) => {
   const limit = clampLimit(c.req.query('limit'))
   const before = parseBefore(c.req.query('before'))

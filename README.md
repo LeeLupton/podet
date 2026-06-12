@@ -158,6 +158,10 @@ D1 does not pause, so there is no keep-alive to run.
   **private**: used only to derive the neighbor tag/count/list; a location is never shown
   to, or revealed by, anyone else — connecting only ever exchanges identity, with consent.
   (Adjacency is a proximity heuristic, ~80 m — we have no parcel polygons.)
+- **Unread badge** — the Me tab carries a count of everything waiting on you: unread direct
+  messages, gig threads, and review-resolution threads, plus incoming connection requests.
+  Per-thread read markers clear it as you open each conversation; it refreshes on a gentle
+  poll and on navigation.
 - **Restorative two-sided reviews** — both parties review each other. The score decides what
   happens: 4-5 publishes immediately, 3 publishes after a quick reflection prompt, and a 1-2 is
   *held* — it doesn't publish, a private improvement conversation opens, and the subject sees the

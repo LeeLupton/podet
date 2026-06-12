@@ -301,6 +301,17 @@ describe('UI surface sweep (no 404/500 from any api.js route)', () => {
       ).status,
     )
     check('GET /dms/:userId', (await call(`/dms/${b.id}`, {}, a.token)).status)
+    check('GET /me/unread', (await call('/me/unread', {}, a.token)).status)
+    check(
+      'POST /reads',
+      (
+        await call(
+          '/reads',
+          { method: 'POST', body: JSON.stringify({ scope: 'dm', scope_id: b.id }) },
+          a.token,
+        )
+      ).status,
+    )
     check(
       'DELETE /users/:id/connect',
       (await call(`/users/${b.id}/connect`, { method: 'DELETE' }, a.token)).status,

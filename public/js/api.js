@@ -156,6 +156,10 @@ export const api = {
   dms: (userId) => request(`/dms/${userId}`),
   sendDm: (userId, body) => request(`/dms/${userId}`, { method: 'POST', body: { body } }),
 
+  // Unread badge
+  unread: () => request('/me/unread'),
+  markRead: (scope, scope_id) => request('/reads', { method: 'POST', body: { scope, scope_id } }),
+
   // Account
   deleteAccount: (password) => request('/me/delete', { method: 'POST', body: { password } }),
 

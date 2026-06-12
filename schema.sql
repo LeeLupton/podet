@@ -195,6 +195,18 @@ create table if not exists direct_messages (
 
 create index if not exists idx_dm_pair on direct_messages(user_lo, user_hi, created_at);
 
+-- MESSAGE READS — per-user, per-thread last-read marker, powering the unread
+-- badge. scope ∈ {dm, gig, review}; scope_id is the other user's id (dm), the
+-- gig id, or the review id. A thread is unread when it has messages from someone
+-- else created after last_read_at (or with no marker yet).
+create table if not exists message_reads (
+  user_id      text not null references users(id) on delete cascade,
+  scope        text not null check (scope in ('dm','gig','review')),
+  scope_id     text not null,
+  last_read_at text not null default (datetime('now')),
+  primary key (user_id, scope, scope_id)
+);
+
 -- REPORTS — content/user reports, verification requests, and support tickets.
 create table if not exists reports (
   id          text primary key,

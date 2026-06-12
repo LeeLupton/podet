@@ -21,6 +21,7 @@ import {
   starsText,
   toast,
 } from './ui.js'
+import { markThreadRead } from './unread.js'
 
 // main.js sets these so logout returns to the gate and "Edit" opens the gig form.
 let onLoggedOut = null
@@ -344,7 +345,10 @@ function reviewThread(reviewId) {
         list.classList.toggle('hidden', closing)
         form.classList.toggle('hidden', closing)
         toggle.textContent = closing ? 'Open conversation' : 'Hide conversation'
-        if (!closing) await loadThread()
+        if (!closing) {
+          await loadThread()
+          markThreadRead('review', reviewId)
+        }
       },
     },
     'Open conversation',
@@ -802,7 +806,10 @@ function messagesThread(g) {
         const open = list.classList.toggle('hidden')
         form.classList.toggle('hidden', open)
         toggle.textContent = open ? label : 'Hide messages'
-        if (!open) await loadThread()
+        if (!open) {
+          await loadThread()
+          markThreadRead('gig', g.id)
+        }
       },
     },
     label,
@@ -1049,6 +1056,7 @@ function openDmThread(userId, name) {
   body.append(list, form)
   openSheet(body)
   loadDms()
+  markThreadRead('dm', userId)
 }
 
 function neighborsBlock() {
