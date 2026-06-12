@@ -62,6 +62,7 @@ async function load(root) {
     root.append(notificationsBlock())
     root.append(businessBlock(profile))
     root.append(propertiesBlock())
+    root.append(neighborsBlock())
     root.append(changePasswordBlock())
     root.append(gigsBlock(mine, root))
     root.append(reviewsBlock(reviews, me.id))
@@ -986,6 +987,188 @@ function propertiesBlock() {
   )
   wrap.append(form)
   loadList()
+  return wrap
+}
+
+/* --- Neighbors & connections --- */
+
+// A direct-message thread with a connected user, in a sheet.
+function openDmThread(userId, name) {
+  const body = h('div', { class: 'sheet-body' }, h('h2', { class: 'me-name' }, `Message ${name}`))
+  const list = h('div', { class: 'comments' })
+  const input = h('input', {
+    class: 'input',
+    type: 'text',
+    maxlength: '1000',
+    placeholder: 'Message…',
+  })
+  const sendBtn = h('button', { class: 'btn-ghost', type: 'submit' }, 'Send')
+  const form = h(
+    'form',
+    {
+      class: 'comment-form',
+      onSubmit: async (e) => {
+        e.preventDefault()
+        const text = input.value.trim()
+        if (!text) return
+        sendBtn.disabled = true
+        try {
+          await api.sendDm(userId, text)
+          input.value = ''
+          await loadDms()
+        } catch (err) {
+          toast(err instanceof ApiError ? err.message : 'Could not send', 'error')
+        } finally {
+          sendBtn.disabled = false
+        }
+      },
+    },
+    input,
+    sendBtn,
+  )
+  async function loadDms() {
+    try {
+      const msgs = await api.dms(userId)
+      clear(list)
+      if (!msgs.length) list.append(h('div', { class: 'gig-meta' }, 'No messages yet.'))
+      for (const m of msgs) {
+        list.append(
+          h(
+            'div',
+            { class: 'comment' },
+            h('span', { class: 'comment-author' }, m.sender_name || 'Someone'),
+            h('span', { class: 'comment-body' }, m.body),
+            h('span', { class: 'comment-date' }, fmtDate(m.created_at)),
+          ),
+        )
+      }
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Could not load messages', 'error')
+    }
+  }
+  body.append(list, form)
+  openSheet(body)
+  loadDms()
+}
+
+function neighborsBlock() {
+  const wrap = h(
+    'div',
+    { class: 'me-section' },
+    h('h2', { class: 'section-title' }, 'Neighbors & connections'),
+    h(
+      'p',
+      { class: 'hint' },
+      'Landscapers whose routes touch yours. Connect to coordinate, hand off, or cover each other.',
+    ),
+  )
+  const requestsWrap = h('div', { class: 'list' })
+  const nearWrap = h('div', { class: 'list' })
+  const connectedWrap = h('div', { class: 'list' })
+
+  function row(u, ...controls) {
+    return h(
+      'div',
+      { class: 'card gig-row-top' },
+      nameLink(u.display_name || 'Neighbor', u.id, u.verified),
+      h('div', { class: 'post-actions' }, ...controls),
+    )
+  }
+  function btn(label, cls, onClick) {
+    return h('button', { class: cls, onClick }, label)
+  }
+
+  async function reload() {
+    try {
+      const [neighbors, conns] = await Promise.all([api.neighbors(), api.connections()])
+      clear(requestsWrap)
+      clear(nearWrap)
+      clear(connectedWrap)
+
+      // Incoming requests waiting on you.
+      if (conns.incoming.length) {
+        requestsWrap.append(h('h3', { class: 'subhead' }, 'Requests'))
+        for (const u of conns.incoming) {
+          requestsWrap.append(
+            row(
+              u,
+              btn('Accept', 'btn-ghost on', async () => {
+                try {
+                  await api.acceptConnect(u.id)
+                  toast('Connected')
+                  reload()
+                } catch (err) {
+                  toast(err instanceof ApiError ? err.message : 'Could not accept', 'error')
+                }
+              }),
+              btn('Decline', 'link-btn danger', async () => {
+                await api.disconnect(u.id).catch(() => {})
+                reload()
+              }),
+            ),
+          )
+        }
+      }
+
+      // Discovery: neighbors you're not yet connected to.
+      const toShow = neighbors.filter(
+        (n) => n.connection === 'none' || n.connection === 'pending_out',
+      )
+      if (toShow.length) {
+        nearWrap.append(h('h3', { class: 'subhead' }, 'Near your route'))
+        for (const n of toShow) {
+          const control =
+            n.connection === 'pending_out'
+              ? btn('Requested', 'link-btn', async () => {
+                  await api.disconnect(n.id).catch(() => {})
+                  reload()
+                })
+              : btn('Connect', 'btn-ghost', async () => {
+                  try {
+                    await api.connect(n.id)
+                    toast('Request sent')
+                    reload()
+                  } catch (err) {
+                    toast(err instanceof ApiError ? err.message : 'Could not connect', 'error')
+                  }
+                })
+          nearWrap.append(row(n, control))
+        }
+      }
+
+      // Established connections — the messaging hub.
+      if (conns.connected.length) {
+        connectedWrap.append(h('h3', { class: 'subhead' }, 'Connected'))
+        for (const u of conns.connected) {
+          connectedWrap.append(
+            row(
+              u,
+              btn('Message', 'btn-ghost', () => openDmThread(u.id, u.display_name || 'Neighbor')),
+              btn('Disconnect', 'link-btn danger', async () => {
+                await api.disconnect(u.id).catch(() => {})
+                reload()
+              }),
+            ),
+          )
+        }
+      }
+
+      if (!conns.incoming.length && !toShow.length && !conns.connected.length) {
+        nearWrap.append(
+          emptyState(
+            'No neighbors yet — add the properties on your route to find landscapers nearby.',
+          ),
+        )
+      }
+    } catch (err) {
+      nearWrap.append(
+        errorState(err instanceof ApiError ? err.message : 'Could not load neighbors', reload),
+      )
+    }
+  }
+
+  wrap.append(requestsWrap, nearWrap, connectedWrap)
+  reload()
   return wrap
 }
 

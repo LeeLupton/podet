@@ -147,6 +147,15 @@ export const api = {
     request('/me/properties', { method: 'POST', body: { label, lat, lng } }),
   deleteProperty: (id) => request(`/me/properties/${id}`, { method: 'DELETE' }),
 
+  // Neighbors & connections (landscaper-to-landscaper networking)
+  neighbors: () => request('/me/neighbors'),
+  connections: () => request('/me/connections'),
+  connect: (userId) => request(`/users/${userId}/connect`, { method: 'POST' }),
+  acceptConnect: (userId) => request(`/users/${userId}/connect/accept`, { method: 'POST' }),
+  disconnect: (userId) => request(`/users/${userId}/connect`, { method: 'DELETE' }),
+  dms: (userId) => request(`/dms/${userId}`),
+  sendDm: (userId, body) => request(`/dms/${userId}`, { method: 'POST', body: { body } }),
+
   // Account
   deleteAccount: (password) => request('/me/delete', { method: 'POST', body: { password } }),
 

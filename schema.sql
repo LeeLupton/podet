@@ -168,6 +168,33 @@ create table if not exists properties (
 create index if not exists idx_properties_owner on properties(owner_id);
 create index if not exists idx_properties_bbox  on properties(lat, lng);
 
+-- CONNECTIONS — mutual-consent links between landscapers (discovered via the
+-- neighbor list). One row per pair; a request is PENDING until the addressee
+-- accepts. Only ACCEPTED connections may exchange direct messages.
+create table if not exists connections (
+  requester_id text not null references users(id) on delete cascade,
+  addressee_id text not null references users(id) on delete cascade,
+  status       text not null default 'PENDING' check (status in ('PENDING','ACCEPTED')),
+  created_at   text not null default (datetime('now')),
+  primary key (requester_id, addressee_id)
+);
+
+create index if not exists idx_connections_addressee on connections(addressee_id, status);
+create index if not exists idx_connections_requester on connections(requester_id, status);
+
+-- DIRECT MESSAGES — a thread between two connected users. The pair is stored in
+-- canonical order (user_lo < user_hi) so one conversation has one key.
+create table if not exists direct_messages (
+  id         text primary key,
+  user_lo    text not null references users(id),
+  user_hi    text not null references users(id),
+  sender_id  text not null references users(id),
+  body       text not null,
+  created_at text not null default (datetime('now'))
+);
+
+create index if not exists idx_dm_pair on direct_messages(user_lo, user_hi, created_at);
+
 -- REPORTS — content/user reports, verification requests, and support tickets.
 create table if not exists reports (
   id          text primary key,

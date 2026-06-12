@@ -1795,6 +1795,257 @@ app.delete('/me/properties/:id', async (c) => {
   return c.json({ ok: true })
 })
 
+/* =================== NEIGHBORS & CONNECTIONS ===================== */
+// Discovery + mutual-consent links between landscapers whose routes touch.
+// No location ever crosses the boundary — only identity, once both opt in.
+
+// Connection state between two users (one row per pair, either direction).
+async function connectionBetween(db: D1Database, a: string, b: string): Promise<any | null> {
+  return db
+    .prepare(
+      `select requester_id, addressee_id, status from connections
+        where (requester_id = ? and addressee_id = ?) or (requester_id = ? and addressee_id = ?)`,
+    )
+    .bind(a, b, b, a)
+    .first()
+}
+
+// Map each other-user id to the caller's relationship: connected / pending_out
+// (caller asked) / pending_in (caller was asked) / none.
+async function connectionStatuses(
+  db: D1Database,
+  userId: string,
+  ids: string[],
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>()
+  if (!ids.length) return map
+  const placeholders = ids.map(() => '?').join(',')
+  const res = await db
+    .prepare(
+      `select requester_id, addressee_id, status from connections
+        where (requester_id = ? and addressee_id in (${placeholders}))
+           or (addressee_id = ? and requester_id in (${placeholders}))`,
+    )
+    .bind(userId, ...ids, userId, ...ids)
+    .all()
+  for (const r of res.results as any[]) {
+    const other = r.requester_id === userId ? r.addressee_id : r.requester_id
+    if (r.status === 'ACCEPTED') map.set(other, 'connected')
+    else map.set(other, r.requester_id === userId ? 'pending_out' : 'pending_in')
+  }
+  return map
+}
+
+// The actionable neighbor list: other landscapers whose routes touch yours, each
+// with your current connection status so the UI can show Connect / Pending / Message.
+app.get('/me/neighbors', async (c) => {
+  const userId = c.get('userId')
+  const pts = await loadPropertyPoints(c.env.DB, userId)
+  if (!pts.length) return c.json([])
+  const { latDelta, lngDelta } = bboxDeltas(pts[0].lat, ADJACENT_MILES)
+  const cand = await c.env.DB.prepare(
+    `select p2.owner_id as oid, p2.lat as olat, p2.lng as olng, p1.lat as tlat, p1.lng as tlng,
+            u.display_name as display_name, u.verified as verified
+       from properties p1
+       join properties p2
+         on p2.owner_id <> p1.owner_id
+        and p2.lat between p1.lat - ? and p1.lat + ?
+        and p2.lng between p1.lng - ? and p1.lng + ?
+       join users u on u.id = p2.owner_id and u.deleted = 0
+      where p1.owner_id = ?`,
+  )
+    .bind(latDelta, latDelta, lngDelta, lngDelta, userId)
+    .all()
+  // Refine bbox candidates to the real circle; keep one entry per neighbor.
+  const byId = new Map<string, any>()
+  for (const r of cand.results as any[]) {
+    if (haversineMiles(r.tlat, r.tlng, r.olat, r.olng) <= ADJACENT_MILES && !byId.has(r.oid)) {
+      byId.set(r.oid, { id: r.oid, display_name: r.display_name, verified: r.verified })
+    }
+  }
+  const ids = [...byId.keys()]
+  const blocked = await blockedSet(c.env.DB, userId)
+  const visible = ids.filter((id) => !blocked.has(id))
+  const statuses = await connectionStatuses(c.env.DB, userId, visible)
+  return c.json(visible.map((id) => ({ ...byId.get(id), connection: statuses.get(id) ?? 'none' })))
+})
+
+// Your connections + the requests waiting on you (and the ones you've sent).
+app.get('/me/connections', async (c) => {
+  const userId = c.get('userId')
+  const res = await c.env.DB.prepare(
+    `select c.requester_id, c.addressee_id, c.status,
+            u.id as uid, u.display_name, u.verified
+       from connections c
+       join users u on u.id = case when c.requester_id = ? then c.addressee_id else c.requester_id end
+      where (c.requester_id = ? or c.addressee_id = ?) and u.deleted = 0
+      order by c.created_at desc`,
+  )
+    .bind(userId, userId, userId)
+    .all()
+  const connected: any[] = []
+  const incoming: any[] = []
+  const outgoing: any[] = []
+  for (const r of res.results as any[]) {
+    const who = { id: r.uid, display_name: r.display_name, verified: r.verified }
+    if (r.status === 'ACCEPTED') connected.push(who)
+    else if (r.addressee_id === userId) incoming.push(who)
+    else outgoing.push(who)
+  }
+  return c.json({ connected, incoming, outgoing })
+})
+
+// Send (or auto-accept a reciprocal) connection request.
+app.post('/users/:id/connect', async (c) => {
+  if (!(await rateLimit(c, 'connect', 30, 300))) {
+    return c.json({ error: 'too many requests — slow down' }, 429)
+  }
+  const me = c.get('userId')
+  const them = c.req.param('id')
+  if (them === me) return c.json({ error: "you can't connect with yourself" }, 400)
+  const target: any = await c.env.DB.prepare('select id, deleted from users where id = ?')
+    .bind(them)
+    .first()
+  if (!target || target.deleted) return c.json({ error: 'not found' }, 404)
+  if (await isBlockedBetween(c.env.DB, me, them)) return c.json({ error: 'unavailable' }, 403)
+
+  const existing = await connectionBetween(c.env.DB, me, them)
+  if (existing?.status === 'ACCEPTED') return c.json({ ok: true, status: 'connected' })
+  if (existing?.status === 'PENDING') {
+    if (existing.requester_id === me) return c.json({ ok: true, status: 'pending_out' })
+    // They already asked me — reciprocal request means accept.
+    await c.env.DB.prepare(
+      `update connections set status = 'ACCEPTED' where requester_id = ? and addressee_id = ?`,
+    )
+      .bind(them, me)
+      .run()
+    fireAndForget(
+      c,
+      notifyUser(
+        c,
+        them,
+        { title: 'Connection accepted', body: 'You can now message each other.', url: '/' },
+        { urgency: 'normal' },
+      ),
+    )
+    return c.json({ ok: true, status: 'connected' })
+  }
+  await c.env.DB.prepare(
+    `insert into connections (requester_id, addressee_id, status) values (?, ?, 'PENDING')`,
+  )
+    .bind(me, them)
+    .run()
+  fireAndForget(
+    c,
+    notifyUser(
+      c,
+      them,
+      { title: 'New connection request', body: 'A neighbor wants to connect.', url: '/' },
+      { urgency: 'normal' },
+    ),
+  )
+  return c.json({ ok: true, status: 'pending_out' }, 201)
+})
+
+// Accept a pending request that was sent TO you.
+app.post('/users/:id/connect/accept', async (c) => {
+  const me = c.get('userId')
+  const them = c.req.param('id')
+  const res = await c.env.DB.prepare(
+    `update connections set status = 'ACCEPTED'
+      where requester_id = ? and addressee_id = ? and status = 'PENDING'`,
+  )
+    .bind(them, me)
+    .run()
+  if (res.meta.changes < 1) return c.json({ error: 'no pending request' }, 404)
+  fireAndForget(
+    c,
+    notifyUser(
+      c,
+      them,
+      { title: 'Connection accepted', body: 'You can now message each other.', url: '/' },
+      { urgency: 'normal' },
+    ),
+  )
+  return c.json({ ok: true })
+})
+
+// Cancel a request, decline one, or disconnect — removes any link either way.
+app.delete('/users/:id/connect', async (c) => {
+  const me = c.get('userId')
+  const them = c.req.param('id')
+  await c.env.DB.prepare(
+    `delete from connections
+      where (requester_id = ? and addressee_id = ?) or (requester_id = ? and addressee_id = ?)`,
+  )
+    .bind(me, them, them, me)
+    .run()
+  return c.json({ ok: true })
+})
+
+/* ===================== DIRECT MESSAGES ========================== */
+// Between two ACCEPTED-connected users. Pair stored canonically (lo < hi).
+
+function pairKey(a: string, b: string): [string, string] {
+  return a < b ? [a, b] : [b, a]
+}
+
+async function areConnected(db: D1Database, a: string, b: string): Promise<boolean> {
+  const row = await connectionBetween(db, a, b)
+  return row?.status === 'ACCEPTED'
+}
+
+app.get('/dms/:userId', async (c) => {
+  const me = c.get('userId')
+  const them = c.req.param('userId')
+  if (!(await areConnected(c.env.DB, me, them))) {
+    return c.json({ error: 'connect first' }, 403)
+  }
+  const [lo, hi] = pairKey(me, them)
+  const rows = await c.env.DB.prepare(
+    `select m.id, m.sender_id, m.body, m.created_at, u.display_name as sender_name
+       from direct_messages m join users u on u.id = m.sender_id
+      where m.user_lo = ? and m.user_hi = ? order by m.created_at asc limit 200`,
+  )
+    .bind(lo, hi)
+    .all()
+  return c.json(rows.results)
+})
+
+app.post('/dms/:userId', async (c) => {
+  if (!(await rateLimit(c, 'dm', 60, 300))) {
+    return c.json({ error: 'too many messages — slow down' }, 429)
+  }
+  const me = c.get('userId')
+  const them = c.req.param('userId')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const bodyCheck = validateString(b.body, LIMITS.message_body)
+  if (!bodyCheck.ok) return c.json({ error: 'message must be 1-1000 chars' }, 400)
+  if (await isBlockedBetween(c.env.DB, me, them)) return c.json({ error: 'unavailable' }, 403)
+  if (!(await areConnected(c.env.DB, me, them))) return c.json({ error: 'connect first' }, 403)
+  const [lo, hi] = pairKey(me, them)
+  await c.env.DB.prepare(
+    `insert into direct_messages (id, user_lo, user_hi, sender_id, body) values (?, ?, ?, ?, ?)`,
+  )
+    .bind(crypto.randomUUID(), lo, hi, me, bodyCheck.value)
+    .run()
+  fireAndForget(
+    c,
+    notifyUser(
+      c,
+      them,
+      { title: 'New message', body: 'A connection sent you a message.', url: '/' },
+      { urgency: 'normal' },
+    ),
+  )
+  return c.json({ ok: true }, 201)
+})
+
 app.get('/users/:id/reviews', async (c) => {
   const limit = clampLimit(c.req.query('limit'))
   const before = parseBefore(c.req.query('before'))

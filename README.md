@@ -150,11 +150,13 @@ D1 does not pause, so there is no keep-alive to run.
 
 ## Capabilities
 
-- **Routes & neighbors (landscaper-to-landscaper)** — add the properties on your route.
-  Other landscapers whose routes touch yours surface as "neighbors" so you can coordinate,
-  hand off, or cover each other; a gig next to your route is tagged too. Profiles show a
-  public **neighbor count** (network density). Property locations are **private** — used
-  only to derive the neighbor tag/count; never shown to, or revealed by, anyone else.
+- **Routes, neighbors & connections (landscaper-to-landscaper)** — add the properties on
+  your route. Other landscapers whose routes touch yours surface in a **neighbors list**;
+  profiles show a public **neighbor count** (network density). From there you can send a
+  **mutual-consent connection request** — once accepted, the two of you get a **direct
+  message** thread to coordinate, hand off, or cover each other. Property locations are
+  **private**: used only to derive the neighbor tag/count/list; a location is never shown
+  to, or revealed by, anyone else — connecting only ever exchanges identity, with consent.
   (Adjacency is a proximity heuristic, ~80 m — we have no parcel polygons.)
 - **Restorative two-sided reviews** — both parties review each other. The score decides what
   happens: 4-5 publishes immediately, 3 publishes after a quick reflection prompt, and a 1-2 is

@@ -279,6 +279,33 @@ describe('UI surface sweep (no 404/500 from any api.js route)', () => {
       (await call(`/me/properties/${prop.body.id}`, { method: 'DELETE' }, a.token)).status,
     )
 
+    // Neighbors & connections surface
+    check('GET /me/neighbors', (await call('/me/neighbors', {}, a.token)).status)
+    check('GET /me/connections', (await call('/me/connections', {}, a.token)).status)
+    check(
+      'POST /users/:id/connect',
+      (await call(`/users/${b.id}/connect`, { method: 'POST' }, a.token)).status,
+    )
+    check(
+      'POST /users/:id/connect/accept',
+      (await call(`/users/${a.id}/connect/accept`, { method: 'POST' }, b.token)).status,
+    )
+    check(
+      'POST /dms/:userId',
+      (
+        await call(
+          `/dms/${b.id}`,
+          { method: 'POST', body: JSON.stringify({ body: 'hi' }) },
+          a.token,
+        )
+      ).status,
+    )
+    check('GET /dms/:userId', (await call(`/dms/${b.id}`, {}, a.token)).status)
+    check(
+      'DELETE /users/:id/connect',
+      (await call(`/users/${b.id}/connect`, { method: 'DELETE' }, a.token)).status,
+    )
+
     // Admin endpoints exist (403 for non-admins, never 404)
     check('GET /admin/reports', (await call('/admin/reports', {}, a.token)).status)
     check(
