@@ -172,6 +172,22 @@ describe('UI surface sweep (no 404/500 from any api.js route)', () => {
       ).status,
     )
     check('GET /gigs/:id/messages', (await call(`/gigs/${gid2}/messages`, {}, b.token)).status)
+    // Restorative reviews: worker reviews hirer after marking done; resolution feed.
+    check(
+      'POST /gigs/:id/done (review)',
+      (await call(`/gigs/${gid2}/done`, { method: 'POST' }, b.token)).status,
+    )
+    check(
+      'POST /gigs/:id/review',
+      (
+        await call(
+          `/gigs/${gid2}/review`,
+          { method: 'POST', body: JSON.stringify({ rating: 5, review: 'sweep' }) },
+          b.token,
+        )
+      ).status,
+    )
+    check('GET /reviews/resolving', (await call('/reviews/resolving', {}, a.token)).status)
     check(
       'POST /reports',
       (

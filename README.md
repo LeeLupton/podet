@@ -150,6 +150,15 @@ D1 does not pause, so there is no keep-alive to run.
 
 ## Capabilities
 
+- **Restorative two-sided reviews** — both parties review each other. The score decides what
+  happens: 4-5 publishes immediately, 3 publishes after a quick reflection prompt, and a 1-2 is
+  *held* — it doesn't publish, a private improvement conversation opens, and the subject sees the
+  written feedback (not the number) so it's about the substance. A held review can only be
+  **raised**, never lowered (no "raise my rating or I'll drop you" coercion), and it
+  auto-publishes after 7 days so it can never become a silent veto. The worker can review the
+  hirer once the work is marked done — so a hirer who ghosts without paying is still
+  accountable. Skill is shown as completed gigs plus **distinct reviewers** (hard to fake with
+  sock puppets), with reviews as the portfolio.
 - **Work photos** — at review time the hirer attaches photos of the finished job (stored in
   R2). They appear on both the worker's portfolio and the hirer's profile.
 - **Pagination** — the board and reviews use keyset paging with a "Load more" button.

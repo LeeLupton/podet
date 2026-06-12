@@ -495,11 +495,12 @@ app.get('/gigs/mine', async (c) => {
     .all()
   const claimed = await c.env.DB.prepare(
     `select g.*, hp.display_name as poster_name,
-            (select count(*) from gig_messages m where m.gig_id = g.id) as message_count
+            (select count(*) from gig_messages m where m.gig_id = g.id) as message_count,
+            (select count(*) from reviews r where r.gig_id = g.id and r.author_id = ?) as reviewed_by_me
        from gigs g join users hp on hp.id = g.posted_by
       where g.claimed_by = ? order by g.created_at desc limit 200`,
   )
-    .bind(userId)
+    .bind(userId, userId)
     .all()
   // Attach photos to the gigs you posted (shown on your profile).
   const postedRows = posted.results as any[]

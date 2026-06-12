@@ -4,7 +4,7 @@
 
 import { ApiError, api } from './api.js'
 import { getUser, logout } from './auth.js'
-import { renderRatePanel } from './post.js'
+import { renderRatePanel, renderReviewPanel } from './post.js'
 import {
   clear,
   confirmSheet,
@@ -45,15 +45,18 @@ async function load(root) {
     return
   }
   try {
-    const [pub, self, reviews, mine] = await Promise.all([
+    const [pub, self, reviews, mine, resolving] = await Promise.all([
       api.user(me.id),
       api.me(),
       api.userReviews(me.id),
       api.myGigs(),
+      api.resolvingReviews(),
     ])
     const profile = { ...pub, ...self, average_rating: pub.average_rating }
     clear(root)
     root.append(headerBlock(me, profile))
+    const resolution = resolutionBlock(resolving, root)
+    if (resolution) root.append(resolution)
     root.append(moneyBlock(mine))
     root.append(notificationsBlock())
     root.append(businessBlock(profile))
@@ -100,6 +103,13 @@ function statsRow(avg, profile) {
         : 'no reviews yet',
     ),
     stat(String(profile.total_gigs), profile.total_gigs === 1 ? 'gig done' : 'gigs done'),
+    // Distinct reviewers — the hard-to-fake skill signal (sock puppets can't pad it).
+    profile.distinct_counterparties
+      ? stat(
+          String(profile.distinct_counterparties),
+          profile.distinct_counterparties === 1 ? 'neighbor' : 'neighbors',
+        )
+      : null,
   )
 }
 
@@ -144,6 +154,130 @@ function gigsBlock(mine, root) {
 
 function statusPill(status) {
   return h('span', { class: `pill pill-${status.toLowerCase()}` }, status.toLowerCase())
+}
+
+// Held reviews awaiting resolution — both the ones I wrote (which I can raise or
+// withdraw) and the ones about me (feedback to act on). Returns null when there's
+// nothing pending, so the section only appears when it's relevant.
+function resolutionBlock(resolving, root) {
+  const authored = resolving?.authored || []
+  const aboutMe = resolving?.about_me || []
+  if (!authored.length && !aboutMe.length) return null
+  const wrap = h(
+    'div',
+    { class: 'me-section' },
+    h('h2', { class: 'section-title' }, 'Reviews in resolution'),
+    h(
+      'p',
+      { class: 'hint' },
+      'Low ratings stay private while you talk it through. Raise or withdraw yours; held reviews publish on their own after 7 days.',
+    ),
+  )
+
+  for (const r of aboutMe) {
+    wrap.append(
+      h(
+        'div',
+        { class: 'card gig-row' },
+        h('div', { class: 'gig-title' }, `${r.author_name} left feedback`),
+        h('div', { class: 'gig-meta' }, r.task_type),
+        h('p', { class: 'review-body' }, r.body || 'No note left.'),
+        h(
+          'p',
+          { class: 'hint' },
+          `Auto-publishes ${fmtDateTime(r.resolve_deadline)} if unresolved.`,
+        ),
+        h(
+          'button',
+          {
+            class: 'btn-ghost',
+            onClick: async () => {
+              try {
+                await api.acknowledgeReview(r.id)
+                toast('Acknowledged — reply in the gig’s messages to talk it through')
+                renderProfile(root)
+              } catch (err) {
+                toast(err instanceof ApiError ? err.message : 'Could not acknowledge', 'error')
+              }
+            },
+          },
+          'Acknowledge',
+        ),
+      ),
+    )
+  }
+
+  for (const r of authored) {
+    const card = h(
+      'div',
+      { class: 'card gig-row' },
+      h('div', { class: 'gig-title' }, `Your held review of ${r.subject_name}`),
+      h('div', { class: 'gig-meta' }, `${r.task_type} · you rated ${r.stars}★ (held)`),
+      r.body ? h('p', { class: 'review-body' }, r.body) : null,
+    )
+    if (r.counterpart) {
+      card.append(
+        h(
+          'p',
+          { class: 'hint' },
+          `They rated you ${r.counterpart.stars}★${r.counterpart.body ? `: “${r.counterpart.body}”` : ''} — still want to hold this?`,
+        ),
+      )
+    }
+    card.append(
+      h(
+        'p',
+        { class: 'hint' },
+        `Auto-publishes ${fmtDateTime(r.resolve_deadline)}.${r.responded ? ' They’ve responded.' : ''}`,
+      ),
+    )
+    const actions = h('div', { class: 'post-actions' })
+    for (let n = r.stars + 1; n <= 5; n++) {
+      actions.append(
+        h(
+          'button',
+          {
+            class: 'btn-ghost',
+            onClick: async () => {
+              try {
+                const res = await api.reviseReview(r.id, n)
+                toast(
+                  res.review_status === 'PUBLISHED'
+                    ? `Raised to ${n}★ — published`
+                    : `Raised to ${n}★`,
+                )
+                renderProfile(root)
+              } catch (err) {
+                toast(err instanceof ApiError ? err.message : 'Could not revise', 'error')
+              }
+            },
+          },
+          `Raise to ${n}★`,
+        ),
+      )
+    }
+    actions.append(
+      h(
+        'button',
+        {
+          class: 'btn-ghost danger',
+          onClick: async () => {
+            try {
+              await api.withdrawReview(r.id)
+              toast('Review withdrawn')
+              renderProfile(root)
+            } catch (err) {
+              toast(err instanceof ApiError ? err.message : 'Could not withdraw', 'error')
+            }
+          },
+        },
+        'Withdraw',
+      ),
+    )
+    card.append(actions)
+    wrap.append(card)
+  }
+  return wrap
 }
 
 function postedGigCard(g, root) {
@@ -281,6 +415,11 @@ function claimedGigCard(g, root) {
       ),
     )
     card.append(actions)
+  }
+  // Once the work is done (or the gig is closed), the worker reviews the hirer —
+  // the other half of accountability. Hidden once they've already reviewed.
+  if ((g.done_at || g.status === 'COMPLETED') && !g.reviewed_by_me) {
+    card.append(renderReviewPanel(g, () => renderProfile(root)))
   }
   return card
 }

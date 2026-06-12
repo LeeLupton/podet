@@ -221,51 +221,88 @@ function labeled(label, control) {
   return h('label', { class: 'lbl' }, h('span', {}, label), control)
 }
 
-// Inline rate panel for a CLAIMED gig you posted. Calls completeGig; server
-// rejects non-owners. onDone() is invoked after a successful close & pay.
-export function renderRatePanel(gig, onDone) {
+// A star picker (1-5) with a live "reflection" line that turns a low score into
+// a constructive moment: 3 nudges for a tip, 1-2 explains the score won't
+// publish immediately — it opens a private conversation — and points safety or
+// payment problems at Report instead. Returns the building blocks the panels
+// share. `get()` reads the current score; `note` is the textarea.
+function starField() {
   let selected = 0
   const starBtns = []
   const note = h('textarea', {
     class: 'input',
     rows: '2',
     maxlength: '1000',
-    placeholder: 'Optional note for the review',
+    placeholder: 'Optional note — specific, kind, useful',
   })
-  const payBtn = h('button', { class: 'btn-primary', disabled: true }, 'Close & pay')
+  const reflect = h('p', { class: 'hint' }, '')
+  const onChange = []
 
   function paint() {
     starBtns.forEach((b, i) => {
       b.classList.toggle('star-on', i < selected)
       b.setAttribute('aria-pressed', i < selected ? 'true' : 'false')
     })
-    payBtn.disabled = selected < 1
+    if (selected === 0) reflect.textContent = ''
+    else if (selected >= 4) reflect.textContent = 'Publishes to their portfolio right away.'
+    else if (selected === 3)
+      reflect.textContent = 'An honest middle score. Add a note so they know what to improve.'
+    else
+      reflect.textContent =
+        'A low score is held, not published — it opens a private conversation so you can give feedback and they can respond. Safety or payment problem? Use Report instead.'
+    for (const fn of onChange) fn(selected)
   }
 
   for (let i = 1; i <= 5; i++) {
-    const b = h(
-      'button',
-      {
-        type: 'button',
-        class: 'star',
-        'aria-label': `${i} star${i > 1 ? 's' : ''}`,
-        onClick: () => {
-          selected = i
-          paint()
+    starBtns.push(
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'star',
+          'aria-label': `${i} star${i > 1 ? 's' : ''}`,
+          onClick: () => {
+            selected = i
+            paint()
+          },
         },
-      },
-      '★',
+        '★',
+      ),
     )
-    starBtns.push(b)
   }
 
+  return {
+    row: h('div', { class: 'stars-row' }, ...starBtns),
+    reflect,
+    note,
+    get: () => selected,
+    onChange: (fn) => onChange.push(fn),
+  }
+}
+
+// Inline rate panel for a CLAIMED gig you posted. Calls completeGig; server
+// rejects non-owners. onDone() is invoked after a successful close & pay.
+export function renderRatePanel(gig, onDone) {
+  const stars = starField()
+  const note = stars.note
+  const payBtn = h('button', { class: 'btn-primary', disabled: true }, 'Close & pay')
+  stars.onChange((s) => {
+    payBtn.disabled = s < 1
+    payBtn.textContent = s > 0 && s <= 2 ? 'Pay & open feedback chat' : 'Close & pay'
+  })
+
   payBtn.addEventListener('click', async () => {
+    const selected = stars.get()
     if (selected < 1) return
     payBtn.disabled = true
     payBtn.textContent = 'Closing…'
     try {
-      await api.completeGig(gig.id, selected, note.value.trim() || null)
-      toast(`Paid ${money(gig.cash_payout)} · rated ${selected}★`)
+      const res = await api.completeGig(gig.id, selected, note.value.trim() || null)
+      toast(
+        res.review_status === 'RESOLVING'
+          ? `Paid ${money(gig.cash_payout)} · feedback chat opened`
+          : `Paid ${money(gig.cash_payout)} · rated ${selected}★`,
+      )
       if (onDone) onDone()
     } catch (err) {
       toast(err instanceof ApiError ? err.message : 'Could not complete gig', 'error')
@@ -346,11 +383,54 @@ export function renderRatePanel(gig, onDone) {
     'div',
     { class: 'rate-panel' },
     h('div', { class: 'rate-head' }, 'Rate ', h('strong', {}, gig.worker_name || 'the worker')),
-    h('div', { class: 'stars-row' }, ...starBtns),
+    stars.row,
+    stars.reflect,
     note,
     thumbs,
     addPhotoBtn,
     fileInput,
     payBtn,
+  )
+}
+
+// The worker's side: review the hirer once the work is marked done. Same
+// restorative star field, no photos, calls reviewHirer. onDone() runs on success.
+export function renderReviewPanel(gig, onDone) {
+  const stars = starField()
+  const note = stars.note
+  const submit = h('button', { class: 'btn-primary', disabled: true }, 'Submit review')
+  stars.onChange((s) => {
+    submit.disabled = s < 1
+    submit.textContent = s > 0 && s <= 2 ? 'Send feedback privately' : 'Submit review'
+  })
+
+  submit.addEventListener('click', async () => {
+    const selected = stars.get()
+    if (selected < 1) return
+    submit.disabled = true
+    submit.textContent = 'Sending…'
+    try {
+      const res = await api.reviewHirer(gig.id, selected, note.value.trim() || null)
+      toast(
+        res.review_status === 'RESOLVING'
+          ? 'Feedback sent — a private conversation is open'
+          : `Reviewed the hirer ${selected}★`,
+      )
+      if (onDone) onDone()
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Could not submit review', 'error')
+      submit.disabled = false
+      submit.textContent = 'Submit review'
+    }
+  })
+
+  return h(
+    'div',
+    { class: 'rate-panel' },
+    h('div', { class: 'rate-head' }, 'Review ', h('strong', {}, gig.poster_name || 'the hirer')),
+    stars.row,
+    stars.reflect,
+    note,
+    submit,
   )
 }

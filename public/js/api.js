@@ -83,6 +83,15 @@ export const api = {
   imgUrl: (key) => `${BASE}/img/${key}`,
   completeGig: (id, rating, review) =>
     request(`/gigs/${id}/complete`, { method: 'POST', body: { rating, review } }),
+  reviewHirer: (id, rating, review) =>
+    request(`/gigs/${id}/review`, { method: 'POST', body: { rating, review } }),
+
+  // Restorative review resolution
+  resolvingReviews: () => request('/reviews/resolving'),
+  reviseReview: (id, rating) =>
+    request(`/reviews/${id}/revise`, { method: 'POST', body: { rating } }),
+  withdrawReview: (id) => request(`/reviews/${id}/withdraw`, { method: 'POST' }),
+  acknowledgeReview: (id) => request(`/reviews/${id}/acknowledge`, { method: 'POST' }),
 
   // Board
   posts: (before) => request(`/posts${before ? `?before=${encodeURIComponent(before)}` : ''}`),
