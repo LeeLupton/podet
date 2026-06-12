@@ -28,28 +28,6 @@ function unreadDot(n) {
   return n > 0 ? h('span', { class: 'unread-dot' }, n > 9 ? '9+' : String(n)) : null
 }
 
-// "Enter into Showcase" for a COMPLETED gig that has photos and isn't entered
-// yet. Either party may enter it; the server re-checks everything.
-function showcaseEntryBtn(g, root) {
-  if (g.status !== 'COMPLETED' || g.in_showcase) return null
-  return h(
-    'button',
-    {
-      class: 'btn-ghost',
-      onClick: async () => {
-        try {
-          await api.enterShowcase(g.id)
-          toast('Entered — voting runs through Sunday on the Board tab')
-          renderProfile(root)
-        } catch (err) {
-          toast(err instanceof ApiError ? err.message : 'Could not enter', 'error')
-        }
-      },
-    },
-    'Enter into Showcase',
-  )
-}
-
 // main.js sets these so logout returns to the gate and "Edit" opens the gig form.
 let onLoggedOut = null
 export function setOnLoggedOut(fn) {
@@ -148,13 +126,6 @@ function statsRow(avg, profile) {
       ? stat(
           String(profile.neighbor_count),
           profile.neighbor_count === 1 ? 'neighbor' : 'neighbors',
-        )
-      : null,
-    // Weekly Showcase laurels — community-voted best work.
-    profile.showcase_wins
-      ? stat(
-          String(profile.showcase_wins),
-          profile.showcase_wins === 1 ? 'showcase win' : 'showcase wins',
         )
       : null,
   )
@@ -454,8 +425,6 @@ function postedGigCard(g, root) {
       ),
     )
   }
-  const enterBtn = showcaseEntryBtn(g, root)
-  if (enterBtn) card.append(enterBtn)
   return card
 }
 
@@ -537,8 +506,6 @@ function claimedGigCard(g, root) {
   if ((g.done_at || g.status === 'COMPLETED') && !g.reviewed_by_me) {
     card.append(renderReviewPanel(g, () => renderProfile(root)))
   }
-  const enterBtn = showcaseEntryBtn(g, root)
-  if (enterBtn) card.append(enterBtn)
   return card
 }
 

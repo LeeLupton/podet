@@ -302,48 +302,6 @@ describe('UI surface sweep (no 404/500 from any api.js route)', () => {
     )
     check('GET /dms/:userId', (await call(`/dms/${b.id}`, {}, a.token)).status)
     check('GET /me/unread', (await call('/me/unread', {}, a.token)).status)
-
-    // Showcase surface: finish a photographed gig, enter it, and hit the vote
-    // route (a party voting gets 403 — resolved, just forbidden).
-    const gidS = await postGig(a.token)
-    await claim(gidS, b.token)
-    await call(
-      `/gigs/${gidS}/photos`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'image/png' },
-        body: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1]),
-      },
-      a.token,
-    )
-    await call(
-      `/gigs/${gidS}/complete`,
-      { method: 'POST', body: JSON.stringify({ rating: 5 }) },
-      a.token,
-    )
-    check(
-      'POST /showcase/entries',
-      (
-        await call(
-          '/showcase/entries',
-          { method: 'POST', body: JSON.stringify({ gig_id: gidS }) },
-          a.token,
-        )
-      ).status,
-    )
-    const gallery = await call('/showcase', {}, a.token)
-    check('GET /showcase', gallery.status)
-    const sEntry = gallery.body.entries.find((e: any) => e.gig_id === gidS)
-    check(
-      'POST /showcase/vote',
-      (
-        await call(
-          '/showcase/vote',
-          { method: 'POST', body: JSON.stringify({ entry_id: sEntry.id }) },
-          b.token,
-        )
-      ).status,
-    )
     check(
       'POST /reads',
       (

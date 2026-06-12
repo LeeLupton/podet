@@ -195,36 +195,6 @@ create table if not exists direct_messages (
 
 create index if not exists idx_dm_pair on direct_messages(user_lo, user_hi, created_at);
 
--- SHOWCASE — the weekly before/after gallery. A COMPLETED gig with work photos
--- can be entered (once) by either of its parties into the current ISO week;
--- every user gets ONE vote per week (re-voting moves it); when a week closes,
--- its winner is finalized lazily on the next read (no cron on Pages) and both
--- parties carry the laurel on their portfolios.
-create table if not exists showcase_entries (
-  id           text primary key,
-  gig_id       text not null unique references gigs(id) on delete cascade,
-  week         text not null,
-  submitted_by text not null references users(id),
-  created_at   text not null default (datetime('now'))
-);
-
-create index if not exists idx_showcase_week on showcase_entries(week);
-
-create table if not exists showcase_votes (
-  week       text not null,
-  voter_id   text not null references users(id) on delete cascade,
-  entry_id   text not null references showcase_entries(id) on delete cascade,
-  created_at text not null default (datetime('now')),
-  primary key (week, voter_id)
-);
-
-create table if not exists showcase_winners (
-  week         text primary key,
-  entry_id     text not null references showcase_entries(id),
-  votes        integer not null,
-  finalized_at text not null default (datetime('now'))
-);
-
 -- MESSAGE READS — per-user, per-thread last-read marker, powering the unread
 -- badge. scope ∈ {dm, gig, review}; scope_id is the other user's id (dm), the
 -- gig id, or the review id. A thread is unread when it has messages from someone

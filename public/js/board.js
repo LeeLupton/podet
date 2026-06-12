@@ -5,17 +5,7 @@ import { ApiError, api } from './api.js'
 import { getUser } from './auth.js'
 import { requestGeolocation } from './location.js'
 import { nameLink } from './profile.js'
-import {
-  clear,
-  emptyState,
-  errorState,
-  fmtDate,
-  h,
-  photoStrip,
-  promptSheet,
-  spinner,
-  toast,
-} from './ui.js'
+import { clear, emptyState, errorState, fmtDate, h, promptSheet, spinner, toast } from './ui.js'
 
 // main.js wires this so "Turn into a gig" can prefill the Post screen and switch tabs.
 let onTurnIntoGig = null
@@ -28,104 +18,10 @@ let listEl = null
 export function renderBoard(root) {
   clear(root)
   root.append(h('h1', { class: 'screen-title' }, 'Board'))
-  root.append(showcaseBlock())
   root.append(composer())
   listEl = h('div', { class: 'list' })
   root.append(listEl)
   load()
-}
-
-/* --- The Showcase: weekly before/after gallery, one vote each --- */
-
-function showcaseBlock() {
-  const wrap = h(
-    'div',
-    { class: 'me-section' },
-    h('h2', { class: 'section-title' }, 'Showcase'),
-    h(
-      'p',
-      { class: 'hint' },
-      'The week’s best finished work, voted by the pod — one vote each, new week every Monday. Enter a completed gig from the Me tab.',
-    ),
-  )
-  const body = h('div', { class: 'list' })
-  wrap.append(body)
-
-  async function loadShowcase() {
-    try {
-      const data = await api.showcase()
-      clear(body)
-
-      // Spotlight: last week's winner, with its photos.
-      if (data.last_winner) {
-        const lw = data.last_winner
-        body.append(
-          h(
-            'div',
-            { class: 'card gig-row showcase-winner' },
-            h('div', { class: 'subhead' }, `Last week’s best (${lw.week})`),
-            h('div', { class: 'gig-title' }, lw.task_type),
-            h(
-              'div',
-              { class: 'gig-meta' },
-              `${lw.neighborhood} · ${lw.worker_name || 'the worker'} for ${lw.hirer_name || 'the hirer'} · ${lw.votes} vote${lw.votes === 1 ? '' : 's'}`,
-            ),
-            photoStrip(lw.photos, api.imgUrl),
-          ),
-        )
-      }
-
-      if (!data.entries.length) {
-        body.append(
-          emptyState('No entries yet this week — finish a gig, add photos, and enter it.'),
-        )
-        return
-      }
-      const me = getUser()
-      for (const e of data.entries) {
-        const voteBtn = h(
-          'button',
-          {
-            class: e.my_vote ? 'btn-ghost on' : 'btn-ghost',
-            onClick: async () => {
-              try {
-                await api.voteShowcase(e.id)
-                toast(e.my_vote ? 'Vote unchanged' : 'Vote cast — one per week, moving it is fine')
-                loadShowcase()
-              } catch (err) {
-                toast(err instanceof ApiError ? err.message : 'Could not vote', 'error')
-              }
-            },
-          },
-          e.my_vote ? `Your vote (${e.votes})` : `Vote (${e.votes})`,
-        )
-        body.append(
-          h(
-            'div',
-            { class: 'card gig-row' },
-            h('div', { class: 'gig-title' }, e.task_type),
-            h(
-              'div',
-              { class: 'gig-meta' },
-              `${e.neighborhood} · ${e.worker_name || 'the worker'} for ${e.hirer_name || 'the hirer'}`,
-            ),
-            photoStrip(e.photos, api.imgUrl),
-            me ? voteBtn : null,
-          ),
-        )
-      }
-    } catch (err) {
-      clear(body)
-      body.append(
-        errorState(
-          err instanceof ApiError ? err.message : 'Could not load the Showcase',
-          loadShowcase,
-        ),
-      )
-    }
-  }
-  loadShowcase()
-  return wrap
 }
 
 function composer() {

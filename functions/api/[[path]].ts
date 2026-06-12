@@ -24,7 +24,6 @@ import { type PushDeliveryOptions, isAllowedPushEndpoint, sendWebPush, topicFor 
 import { rateLimitKey, windowStart } from '../lib/ratelimit'
 import { REVIEW, planReview, planRevision } from '../lib/review'
 import { validateSlot } from '../lib/schedule'
-import { isPastWeek, isWeekKey, weekKey } from '../lib/showcase'
 import { LIMITS, isValidLatLng, isValidRating, validateString } from '../lib/validate'
 
 type Env = {
@@ -544,8 +543,7 @@ app.get('/gigs/mine', async (c) => {
   const userId = c.get('userId')
   const posted = await c.env.DB.prepare(
     `select g.*, wp.display_name as worker_name,
-            (select count(*) from gig_messages m where m.gig_id = g.id) as message_count,
-            exists(select 1 from showcase_entries e where e.gig_id = g.id) as in_showcase
+            (select count(*) from gig_messages m where m.gig_id = g.id) as message_count
        from gigs g left join users wp on wp.id = g.claimed_by
       where g.posted_by = ? order by g.created_at desc limit 200`,
   )
@@ -554,8 +552,7 @@ app.get('/gigs/mine', async (c) => {
   const claimed = await c.env.DB.prepare(
     `select g.*, hp.display_name as poster_name,
             (select count(*) from gig_messages m where m.gig_id = g.id) as message_count,
-            (select count(*) from reviews r where r.gig_id = g.id and r.author_id = ?) as reviewed_by_me,
-            exists(select 1 from showcase_entries e where e.gig_id = g.id) as in_showcase
+            (select count(*) from reviews r where r.gig_id = g.id and r.author_id = ?) as reviewed_by_me
        from gigs g join users hp on hp.id = g.posted_by
       where g.claimed_by = ? order by g.created_at desc limit 200`,
   )
@@ -1631,36 +1628,28 @@ app.get('/users/:id', async (c) => {
   await publishExpiredReviews(c.env.DB)
   // One D1 batch (single round trip): profile row, hirer counts, distinct
   // counterparties (the hard-to-fake skill signal), block both ways.
-  const [userRes, hirerRes, distinctRes, winsRes, iBlockedRes, blockedMeRes] = await c.env.DB.batch(
-    [
-      c.env.DB.prepare(
-        `select id, display_name, total_gigs, rating_sum, rating_count, business_name, verified, deleted, created_at from users where id = ?`,
-      ).bind(targetId),
-      c.env.DB.prepare(
-        `select count(*) as posted,
+  const [userRes, hirerRes, distinctRes, iBlockedRes, blockedMeRes] = await c.env.DB.batch([
+    c.env.DB.prepare(
+      `select id, display_name, total_gigs, rating_sum, rating_count, business_name, verified, deleted, created_at from users where id = ?`,
+    ).bind(targetId),
+    c.env.DB.prepare(
+      `select count(*) as posted,
                 sum(case when status = 'COMPLETED' then 1 else 0 end) as paid
            from gigs where posted_by = ?`,
-      ).bind(targetId),
-      c.env.DB.prepare(
-        `select count(distinct author_id) as neighbors
+    ).bind(targetId),
+    c.env.DB.prepare(
+      `select count(distinct author_id) as neighbors
          from reviews where subject_id = ? and status = 'PUBLISHED'`,
-      ).bind(targetId),
-      c.env.DB.prepare(
-        `select count(*) as wins from showcase_winners w
-         join showcase_entries e on e.id = w.entry_id
-         join gigs g on g.id = e.gig_id
-        where g.posted_by = ?1 or g.claimed_by = ?1`,
-      ).bind(targetId),
-      c.env.DB.prepare('select 1 from blocks where blocker_id = ? and blocked_id = ?').bind(
-        callerId,
-        targetId,
-      ),
-      c.env.DB.prepare('select 1 from blocks where blocker_id = ? and blocked_id = ?').bind(
-        targetId,
-        callerId,
-      ),
-    ],
-  )
+    ).bind(targetId),
+    c.env.DB.prepare('select 1 from blocks where blocker_id = ? and blocked_id = ?').bind(
+      callerId,
+      targetId,
+    ),
+    c.env.DB.prepare('select 1 from blocks where blocker_id = ? and blocked_id = ?').bind(
+      targetId,
+      callerId,
+    ),
+  ])
   const user: any = (userRes.results as any[])[0]
   // Closed accounts read as gone; someone who blocked you is also gone to you.
   // (If YOU blocked THEM the profile stays visible so you can unblock from it.)
@@ -1674,7 +1663,6 @@ app.get('/users/:id', async (c) => {
   // worker can judge a hirer before claiming (total_gigs is worker-side only).
   const hirer: any = (hirerRes.results as any[])[0]
   const distinct: any = (distinctRes.results as any[])[0]
-  const wins: any = (winsRes.results as any[])[0]
   const blocked = (iBlockedRes.results as any[]).length > 0
   // "Neighbor" — do you and they manage adjacent properties? Derived boolean only;
   // never reveals either side's addresses, distance, or which property matched.
@@ -1695,7 +1683,6 @@ app.get('/users/:id', async (c) => {
     rating_count: user.rating_count,
     average_rating: average,
     distinct_counterparties: distinct?.neighbors ?? 0,
-    showcase_wins: wins?.wins ?? 0,
     business_name: user.business_name,
     verified: user.verified,
     gigs_posted: hirer?.posted ?? 0,
@@ -2165,212 +2152,6 @@ async function unreadCounts(db: D1Database, u: string) {
     threads: { dm: dm.map, gig: gig.map, review: rev.map },
   }
 }
-
-/* ============================ SHOWCASE =========================== */
-// The weekly before/after gallery. Real, paid work only: a COMPLETED gig with
-// photos, entered once by either of its parties. One vote per user per week
-// (re-voting moves it; parties can't vote for their own entry). Winners are
-// finalized lazily on read after the week closes — no cron on Pages.
-
-async function finalizePastShowcaseWeeks(c: any): Promise<void> {
-  const db: D1Database = c.env.DB
-  const open = await db
-    .prepare(
-      `select distinct e.week from showcase_entries e
-        left join showcase_winners w on w.week = e.week
-       where w.week is null`,
-    )
-    .all()
-  for (const row of open.results as any[]) {
-    if (!isPastWeek(row.week)) continue
-    // Most votes wins; ties (and zero-vote weeks) go to the earliest entry.
-    const top: any = await db
-      .prepare(
-        `select e.id, e.gig_id,
-                (select count(*) from showcase_votes v where v.entry_id = e.id) as votes
-           from showcase_entries e
-          where e.week = ?
-          order by votes desc, e.created_at asc
-          limit 1`,
-      )
-      .bind(row.week)
-      .first()
-    if (!top) continue
-    const ins = await db
-      .prepare(
-        `insert into showcase_winners (week, entry_id, votes) values (?, ?, ?)
-         on conflict(week) do nothing`,
-      )
-      .bind(row.week, top.id, top.votes)
-      .run()
-    if (ins.meta.changes < 1) continue // another request finalized it first
-    const gig: any = await db
-      .prepare('select posted_by, claimed_by, task_type from gigs where id = ?')
-      .bind(top.gig_id)
-      .first()
-    if (gig) {
-      for (const uid of [gig.posted_by, gig.claimed_by].filter(Boolean)) {
-        fireAndForget(
-          c,
-          notifyUser(
-            c,
-            uid,
-            {
-              title: 'Showcase winner',
-              body: `${gig.task_type} — voted the week's best work`,
-              url: '/',
-            },
-            { urgency: 'normal' },
-          ),
-        )
-      }
-    }
-  }
-}
-
-// Enter a finished gig (with photos) into the current week. Either party, once.
-app.post('/showcase/entries', async (c) => {
-  if (!(await rateLimit(c, 'showcase-enter', 10, 300))) {
-    return c.json({ error: 'too many entries — slow down' }, 429)
-  }
-  const userId = c.get('userId')
-  let b: any
-  try {
-    b = await c.req.json()
-  } catch {
-    return c.json({ error: 'invalid body' }, 400)
-  }
-  const gigId = b.gig_id ? String(b.gig_id) : ''
-  if (!gigId) return c.json({ error: 'gig_id required' }, 400)
-  const gig: any = await c.env.DB.prepare(
-    'select id, status, posted_by, claimed_by from gigs where id = ?',
-  )
-    .bind(gigId)
-    .first()
-  if (!gig) return c.json({ error: 'not found' }, 404)
-  if (gig.posted_by !== userId && gig.claimed_by !== userId) {
-    return c.json({ error: 'only the gig parties can enter it' }, 403)
-  }
-  if (gig.status !== 'COMPLETED') {
-    return c.json({ error: 'finish the gig first — the Showcase is for completed work' }, 409)
-  }
-  const photo = await c.env.DB.prepare('select 1 from gig_photos where gig_id = ? limit 1')
-    .bind(gigId)
-    .first()
-  if (!photo) return c.json({ error: 'add at least one work photo first' }, 400)
-  try {
-    await c.env.DB.prepare(
-      'insert into showcase_entries (id, gig_id, week, submitted_by) values (?, ?, ?, ?)',
-    )
-      .bind(crypto.randomUUID(), gigId, weekKey(), userId)
-      .run()
-  } catch (e: any) {
-    if (String(e?.message ?? e).includes('UNIQUE')) {
-      return c.json({ error: 'this gig is already in the Showcase' }, 409)
-    }
-    throw e
-  }
-  return c.json({ ok: true, week: weekKey() }, 201)
-})
-
-// The gallery for a week (default: current). Includes photos, vote counts, the
-// caller's vote, and — once a week has closed — its finalized winner. Requests
-// for the current week also carry last week's winner for the spotlight card.
-app.get('/showcase', async (c) => {
-  await finalizePastShowcaseWeeks(c)
-  const userId = c.get('userId')
-  const week = isWeekKey(c.req.query('week')) ? String(c.req.query('week')) : weekKey()
-
-  async function entriesFor(wk: string) {
-    const rows = await c.env.DB.prepare(
-      `select e.id, e.gig_id, e.created_at, g.task_type, g.neighborhood,
-              hp.display_name as hirer_name, wp.display_name as worker_name,
-              (select count(*) from showcase_votes v where v.entry_id = e.id) as votes,
-              exists(select 1 from showcase_votes v where v.entry_id = e.id and v.voter_id = ?1) as my_vote
-         from showcase_entries e
-         join gigs g on g.id = e.gig_id
-         join users hp on hp.id = g.posted_by
-         left join users wp on wp.id = g.claimed_by
-        where e.week = ?2
-        order by votes desc, e.created_at asc
-        limit 50`,
-    )
-      .bind(userId, wk)
-      .all()
-    const entries = rows.results as any[]
-    const photos = await loadPhotosByGig(
-      c.env.DB,
-      entries.map((e) => e.gig_id),
-    )
-    for (const e of entries) e.photos = photos.get(e.gig_id) ?? []
-    return entries
-  }
-
-  const entries = await entriesFor(week)
-  const winnerRow: any = await c.env.DB.prepare(
-    'select entry_id, votes from showcase_winners where week = ?',
-  )
-    .bind(week)
-    .first()
-
-  // Spotlight: when viewing the current week, surface last week's winner too.
-  let last: any = null
-  if (week === weekKey()) {
-    const lastWin: any = await c.env.DB.prepare(
-      `select w.week, w.votes, e.gig_id, g.task_type, g.neighborhood,
-              hp.display_name as hirer_name, wp.display_name as worker_name
-         from showcase_winners w
-         join showcase_entries e on e.id = w.entry_id
-         join gigs g on g.id = e.gig_id
-         join users hp on hp.id = g.posted_by
-         left join users wp on wp.id = g.claimed_by
-        order by w.week desc limit 1`,
-    ).first()
-    if (lastWin) {
-      const photos = await loadPhotosByGig(c.env.DB, [lastWin.gig_id])
-      last = { ...lastWin, photos: photos.get(lastWin.gig_id) ?? [] }
-    }
-  }
-
-  return c.json({
-    week,
-    current: week === weekKey(),
-    entries,
-    winner_entry_id: winnerRow?.entry_id ?? null,
-    last_winner: last,
-  })
-})
-
-// One vote per user per week; re-voting moves it. Parties can't vote for their
-// own entry, and closed weeks are read-only.
-app.post('/showcase/vote', async (c) => {
-  const userId = c.get('userId')
-  let b: any
-  try {
-    b = await c.req.json()
-  } catch {
-    return c.json({ error: 'invalid body' }, 400)
-  }
-  const entryId = b.entry_id ? String(b.entry_id) : ''
-  const entry: any = await c.env.DB.prepare(
-    `select e.id, e.week, g.posted_by, g.claimed_by
-       from showcase_entries e join gigs g on g.id = e.gig_id where e.id = ?`,
-  )
-    .bind(entryId)
-    .first()
-  if (!entry) return c.json({ error: 'not found' }, 404)
-  if (entry.week !== weekKey()) return c.json({ error: 'this week is closed' }, 409)
-  if (entry.posted_by === userId || entry.claimed_by === userId) {
-    return c.json({ error: "you can't vote for your own work" }, 403)
-  }
-  await c.env.DB.prepare(
-    `insert into showcase_votes (week, voter_id, entry_id) values (?, ?, ?)
-     on conflict(week, voter_id) do update set entry_id = excluded.entry_id, created_at = datetime('now')`,
-  )
-    .bind(entry.week, userId, entryId)
-    .run()
-  return c.json({ ok: true })
-})
 
 app.get('/users/:id/reviews', async (c) => {
   const limit = clampLimit(c.req.query('limit'))
