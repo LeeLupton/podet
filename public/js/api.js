@@ -160,6 +160,11 @@ export const api = {
   unread: () => request('/me/unread'),
   markRead: (scope, scope_id) => request('/reads', { method: 'POST', body: { scope, scope_id } }),
 
+  // Showcase (weekly before/after gallery)
+  showcase: (week) => request(`/showcase${week ? `?week=${encodeURIComponent(week)}` : ''}`),
+  enterShowcase: (gig_id) => request('/showcase/entries', { method: 'POST', body: { gig_id } }),
+  voteShowcase: (entry_id) => request('/showcase/vote', { method: 'POST', body: { entry_id } }),
+
   // Account
   deleteAccount: (password) => request('/me/delete', { method: 'POST', body: { password } }),
 

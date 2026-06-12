@@ -724,6 +724,11 @@ textarea.input {
   text-align: center;
 }
 
+/* Showcase */
+.showcase-winner {
+  border-color: var(--accent);
+}
+
 /* Toasts */
 #toast-root {
   position: fixed;

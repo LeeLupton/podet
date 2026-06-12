@@ -7,7 +7,7 @@
 #### The landscaper-to-landscaper network — routes, neighbors & restorative reviews, built end-to-end on Cloudflare.
 
 <p>
-  <img alt="tests" src="https://img.shields.io/badge/tests-263%20passing-3fb950?style=for-the-badge&logo=vitest&logoColor=white">
+  <img alt="tests" src="https://img.shields.io/badge/tests-279%20passing-3fb950?style=for-the-badge&logo=vitest&logoColor=white">
   <img alt="types" src="https://img.shields.io/badge/types-strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white">
   <img alt="lint" src="https://img.shields.io/badge/lint-Biome-60A5FA?style=for-the-badge&logo=biome&logoColor=white">
   <img alt="audit" src="https://img.shields.io/badge/npm%20audit-0%20vulns-3fb950?style=for-the-badge&logo=npm&logoColor=white">
@@ -191,6 +191,13 @@ D1 does not pause, so there is no keep-alive to run.
   **private**: used only to derive the neighbor tag/count/list; a location is never shown
   to, or revealed by, anyone else — connecting only ever exchanges identity, with consent.
   (Adjacency is a proximity heuristic, ~80 m — we have no parcel polygons.)
+- **The Showcase** — a weekly before/after gallery, the engine of landscaping pride. Either
+  party can enter a **completed, photographed gig** into the current ISO week; everyone gets
+  **one vote per week** (re-voting moves it; you can't vote for your own work); Monday the week
+  resets, last week's winner gets the spotlight on the Board tab, and both parties carry a
+  permanent **showcase win** on their profiles. Winners are finalized lazily on read (no cron),
+  and only real paid work is eligible — no farmable content, no infinite feed, one considered
+  vote. Appointment rhythm, not a slot machine.
 - **Unread badge** — the Me tab carries a count of everything waiting on you: unread direct
   messages, gig threads, and review-resolution threads, plus incoming connection requests.
   Per-thread read markers clear it as you open each conversation; it refreshes on a gentle
