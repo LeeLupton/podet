@@ -1129,6 +1129,7 @@ function neighborsBlock() {
       'Landscapers whose routes touch yours. Connect to coordinate, hand off, or cover each other.',
     ),
   )
+  const searchWrap = h('div', { class: 'list' })
   const requestsWrap = h('div', { class: 'list' })
   const nearWrap = h('div', { class: 'list' })
   const connectedWrap = h('div', { class: 'list' })
@@ -1144,6 +1145,95 @@ function neighborsBlock() {
   function btn(label, cls, onClick) {
     return h('button', { class: cls, onClick }, label)
   }
+
+  // The right action(s) for a user given your connection status — shared by the
+  // "near your route" list and search results so they behave identically.
+  function controlsFor(u) {
+    if (u.connection === 'connected') {
+      return [btn('Message', 'btn-ghost', () => openDmThread(u.id, u.display_name || 'Neighbor'))]
+    }
+    if (u.connection === 'pending_out') {
+      return [
+        btn('Requested', 'link-btn', async () => {
+          await api.disconnect(u.id).catch(() => {})
+          reload()
+        }),
+      ]
+    }
+    if (u.connection === 'pending_in') {
+      return [
+        btn('Accept', 'btn-ghost on', async () => {
+          try {
+            await api.acceptConnect(u.id)
+            toast('Connected')
+            reload()
+          } catch (err) {
+            toast(err instanceof ApiError ? err.message : 'Could not accept', 'error')
+          }
+        }),
+      ]
+    }
+    return [
+      btn('Connect', 'btn-ghost', async () => {
+        try {
+          await api.connect(u.id)
+          toast('Request sent')
+          reload()
+        } catch (err) {
+          toast(err instanceof ApiError ? err.message : 'Could not connect', 'error')
+        }
+      }),
+    ]
+  }
+
+  // Find landscapers by name — debounced; results reuse controlsFor.
+  const searchInput = h('input', {
+    class: 'input',
+    type: 'search',
+    maxlength: '60',
+    placeholder: 'Search landscapers by name…',
+    'aria-label': 'Search landscapers',
+  })
+  let searchTimer = null
+  async function runSearch() {
+    const q = searchInput.value.trim()
+    clear(searchWrap)
+    if (q.length < 2) return
+    try {
+      const found = await api.searchUsers(q)
+      clear(searchWrap)
+      if (!found.length) {
+        searchWrap.append(h('div', { class: 'gig-meta' }, `No landscapers matching “${q}”.`))
+        return
+      }
+      searchWrap.append(h('h3', { class: 'subhead' }, 'Search results'))
+      for (const u of found) searchWrap.append(row(u, ...controlsFor(u)))
+    } catch (err) {
+      clear(searchWrap)
+      searchWrap.append(
+        h(
+          'div',
+          { class: 'gig-meta warn-text' },
+          err instanceof ApiError ? err.message : 'Search failed',
+        ),
+      )
+    }
+  }
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchTimer)
+    searchTimer = setTimeout(runSearch, 300)
+  })
+  const searchForm = h(
+    'form',
+    {
+      onSubmit: (e) => {
+        e.preventDefault()
+        clearTimeout(searchTimer)
+        runSearch()
+      },
+    },
+    searchInput,
+  )
 
   async function reload() {
     try {
@@ -1183,24 +1273,7 @@ function neighborsBlock() {
       )
       if (toShow.length) {
         nearWrap.append(h('h3', { class: 'subhead' }, 'Near your route'))
-        for (const n of toShow) {
-          const control =
-            n.connection === 'pending_out'
-              ? btn('Requested', 'link-btn', async () => {
-                  await api.disconnect(n.id).catch(() => {})
-                  reload()
-                })
-              : btn('Connect', 'btn-ghost', async () => {
-                  try {
-                    await api.connect(n.id)
-                    toast('Request sent')
-                    reload()
-                  } catch (err) {
-                    toast(err instanceof ApiError ? err.message : 'Could not connect', 'error')
-                  }
-                })
-          nearWrap.append(row(n, control))
-        }
+        for (const n of toShow) nearWrap.append(row(n, ...controlsFor(n)))
       }
 
       // Established connections — the messaging hub.
@@ -1238,9 +1311,11 @@ function neighborsBlock() {
         errorState(err instanceof ApiError ? err.message : 'Could not load neighbors', reload),
       )
     }
+    // Keep any active search in sync with the new connection state.
+    if (searchInput.value.trim().length >= 2) runSearch()
   }
 
-  wrap.append(requestsWrap, nearWrap, connectedWrap)
+  wrap.append(searchForm, searchWrap, requestsWrap, nearWrap, connectedWrap)
   reload()
   return wrap
 }
