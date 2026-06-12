@@ -113,6 +113,13 @@ function statsRow(avg, profile) {
           profile.distinct_counterparties === 1 ? 'person' : 'people',
         )
       : null,
+    // Network density: other landscapers whose routes touch theirs.
+    profile.neighbor_count
+      ? stat(
+          String(profile.neighbor_count),
+          profile.neighbor_count === 1 ? 'neighbor' : 'neighbors',
+        )
+      : null,
   )
 }
 
@@ -852,7 +859,7 @@ function propertiesBlock() {
     h(
       'p',
       { class: 'hint' },
-      'Add places you manage. Gigs and people next to one of them are tagged “neighbor” so you can coordinate. Locations stay private — never shown to anyone else.',
+      'Add the properties on your route. Other landscapers whose routes touch yours show up as neighbors — so you can coordinate, hand off, or cover each other. Locations stay private; only the neighbor count is ever shared.',
     ),
   )
   const list = h('div', { class: 'list' })

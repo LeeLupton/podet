@@ -150,12 +150,12 @@ D1 does not pause, so there is no keep-alive to run.
 
 ## Capabilities
 
-- **Properties & the "neighbor" tag** — add the places you manage (one home, or many
-  units for a property manager). A gig next to one of your properties, or a person whose
-  property is next to yours, gets a "neighbor" tag so you can coordinate and batch work.
-  Property locations are **private** — used only to derive that boolean; never shown to,
-  or revealed by, anyone else. (Adjacency is a proximity heuristic, ~80 m — we have no
-  parcel polygons.)
+- **Routes & neighbors (landscaper-to-landscaper)** — add the properties on your route.
+  Other landscapers whose routes touch yours surface as "neighbors" so you can coordinate,
+  hand off, or cover each other; a gig next to your route is tagged too. Profiles show a
+  public **neighbor count** (network density). Property locations are **private** — used
+  only to derive the neighbor tag/count; never shown to, or revealed by, anyone else.
+  (Adjacency is a proximity heuristic, ~80 m — we have no parcel polygons.)
 - **Restorative two-sided reviews** — both parties review each other. The score decides what
   happens: 4-5 publishes immediately, 3 publishes after a quick reflection prompt, and a 1-2 is
   *held* — it doesn't publish, a private improvement conversation opens, and the subject sees the

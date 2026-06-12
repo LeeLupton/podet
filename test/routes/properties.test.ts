@@ -1,8 +1,13 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { applySchema, call, clearRateLimits, postGig, register } from '../helpers.ts'
+import { E, applySchema, call, clearRateLimits, postGig, register } from '../helpers.ts'
 
 beforeAll(applySchema)
-beforeEach(clearRateLimits)
+beforeEach(async () => {
+  await clearRateLimits()
+  // Properties persist across tests in the shared per-file DB; the count tests
+  // need a clean slate so earlier fixtures don't inflate neighbor counts.
+  await E.DB.prepare('delete from properties').run()
+})
 
 const base = { lat: 34.72, lng: -76.66 }
 const adjacent = { lat: 34.72, lng: -76.6594 } // ~55 m — within the ~80 m threshold
@@ -96,5 +101,37 @@ describe('neighbor tag on profiles', () => {
     expect(JSON.stringify(profile.body)).not.toContain('secret')
     expect(profile.body.lat).toBeUndefined()
     expect(profile.body.lng).toBeUndefined()
+  })
+})
+
+describe('public neighbor count on profiles', () => {
+  it('counts distinct adjacent landscapers and ignores far ones', async () => {
+    const a = await register('A')
+    const n1 = await register('N1')
+    const n2 = await register('N2')
+    const farUser = await register('Far')
+    await addProperty(a.token, 'A', base.lat, base.lng)
+    await addProperty(n1.token, 'N1', adjacent.lat, adjacent.lng)
+    await addProperty(n2.token, 'N2', base.lat, base.lng) // same spot — adjacent
+    await addProperty(farUser.token, 'Far', farAway.lat, farAway.lng)
+
+    // a's profile reports 2 neighbors (n1, n2), not the far user
+    expect((await call(`/users/${a.id}`, {}, n1.token)).body.neighbor_count).toBe(2)
+    // a far user has no neighbors
+    expect((await call(`/users/${farUser.id}`, {}, a.token)).body.neighbor_count).toBe(0)
+  })
+
+  it('counts each neighbor once even with several adjacent properties', async () => {
+    const a = await register('A')
+    const n = await register('N')
+    await addProperty(a.token, 'A1', base.lat, base.lng)
+    await addProperty(n.token, 'N1', adjacent.lat, adjacent.lng)
+    await addProperty(n.token, 'N2', base.lat, base.lng) // also adjacent to A1
+    expect((await call(`/users/${a.id}`, {}, n.token)).body.neighbor_count).toBe(1)
+  })
+
+  it('is 0 for a user with no properties', async () => {
+    const a = await register('A')
+    expect((await call(`/users/${a.id}`, {}, a.token)).body.neighbor_count).toBe(0)
   })
 })

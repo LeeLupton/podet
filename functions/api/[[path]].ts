@@ -16,7 +16,7 @@ import { secureHeaders } from 'hono/secure-headers'
 
 import { bboxDeltas, haversineMiles } from '../lib/geo'
 import { parseGigInput } from '../lib/gig'
-import { type Point, pointNearAny, setsAdjacent } from '../lib/neighbor'
+import { ADJACENT_MILES, type Point, pointNearAny, setsAdjacent } from '../lib/neighbor'
 import { clampLimit, parseBefore } from '../lib/pagination'
 import { DUMMY_PASSWORD_HASH, hashPassword, verifyPassword } from '../lib/password'
 import { MAX_PHOTOS_PER_GIG, checkImageUpload, photoKey } from '../lib/photos'
@@ -149,6 +149,34 @@ async function loadPropertyPoints(db: D1Database, userId: string): Promise<Point
     .bind(userId)
     .all()
   return (res.results as any[]).map((p) => ({ lat: p.lat, lng: p.lng }))
+}
+
+// How many OTHER landscapers have a property adjacent to one of this user's —
+// the public network-density signal shown on profiles. A bbox prefilter (index
+// idx_properties_bbox) narrows candidates; haversine refines to the real circle.
+// Returns a count only; no identities, coordinates, or distances are exposed.
+async function countNeighbors(db: D1Database, userId: string): Promise<number> {
+  const pts = await loadPropertyPoints(db, userId)
+  if (!pts.length) return 0
+  const { latDelta, lngDelta } = bboxDeltas(pts[0].lat, ADJACENT_MILES)
+  const res = await db
+    .prepare(
+      `select p2.owner_id as oid, p2.lat as olat, p2.lng as olng, p1.lat as tlat, p1.lng as tlng
+         from properties p1
+         join properties p2
+           on p2.owner_id <> p1.owner_id
+          and p2.lat between p1.lat - ? and p1.lat + ?
+          and p2.lng between p1.lng - ? and p1.lng + ?
+         join users u on u.id = p2.owner_id and u.deleted = 0
+        where p1.owner_id = ?`,
+    )
+    .bind(latDelta, latDelta, lngDelta, lngDelta, userId)
+    .all()
+  const set = new Set<string>()
+  for (const r of res.results as any[]) {
+    if (haversineMiles(r.tlat, r.tlng, r.olat, r.olng) <= ADJACENT_MILES) set.add(r.oid)
+  }
+  return set.size
 }
 
 // Reputation accrues to the person a review is ABOUT, and only when the review
@@ -1637,6 +1665,8 @@ app.get('/users/:id', async (c) => {
     ])
     neighbor = mine.length > 0 && theirs.length > 0 && setsAdjacent(mine, theirs)
   }
+  // Public network-density signal: how many other landscapers' routes touch theirs.
+  const neighborCount = await countNeighbors(c.env.DB, targetId)
   return c.json({
     id: user.id,
     display_name: user.display_name,
@@ -1650,6 +1680,7 @@ app.get('/users/:id', async (c) => {
     gigs_paid: hirer?.paid ?? 0,
     i_blocked: blocked ? 1 : 0,
     neighbor: neighbor ? 1 : 0,
+    neighbor_count: neighborCount,
     created_at: user.created_at,
   })
 })

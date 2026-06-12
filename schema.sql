@@ -166,6 +166,7 @@ create table if not exists properties (
 );
 
 create index if not exists idx_properties_owner on properties(owner_id);
+create index if not exists idx_properties_bbox  on properties(lat, lng);
 
 -- REPORTS — content/user reports, verification requests, and support tickets.
 create table if not exists reports (
