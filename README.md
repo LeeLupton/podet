@@ -21,6 +21,7 @@
 <p>
   <img alt="no build step" src="https://img.shields.io/badge/build%20step-none-7cb342?style=for-the-badge">
   <img alt="web push" src="https://img.shields.io/badge/web%20push-VAPID-7cb342?style=for-the-badge&logo=webpush&logoColor=white">
+  <img alt="themes" src="https://img.shields.io/badge/themes-light%20·%20dark%20·%20system-7cb342?style=for-the-badge">
   <img alt="one-command deploy" src="https://img.shields.io/badge/deploy-one%20command-7cb342?style=for-the-badge">
   <img alt="license" src="https://img.shields.io/badge/license-Unlicense-blue?style=for-the-badge">
 </p>
@@ -191,10 +192,14 @@ D1 does not pause, so there is no keep-alive to run.
   **private**: used only to derive the neighbor tag/count/list; a location is never shown
   to, or revealed by, anyone else — connecting only ever exchanges identity, with consent.
   (Adjacency is a proximity heuristic, ~80 m — we have no parcel polygons.)
+- **Appearance & settings** — the Me tab gathers everything you configure under one **Settings**
+  heading: a **theme** picker (System / Light / Dark, applied before first paint so there's no
+  flash), notifications, business/verification, password, blocked users, support, and account
+  deletion. The light and dark palettes are driven entirely by CSS custom properties.
 - **Unread badge** — the Me tab carries a count of everything waiting on you: unread direct
   messages, gig threads, and review-resolution threads, plus incoming connection requests.
   Per-thread read markers clear it as you open each conversation; it refreshes on a gentle
-  poll and on navigation.
+  poll and on navigation, and mirrors onto the OS app badge (installed PWA).
 - **Restorative two-sided reviews** — both parties review each other. The score decides what
   happens: 4-5 publishes immediately, 3 publishes after a quick reflection prompt, and a 1-2 is
   *held* — it doesn't publish, a private improvement conversation opens, and the subject sees the
