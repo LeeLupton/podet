@@ -97,13 +97,14 @@ async function load(root) {
     return
   }
   try {
+    // Refresh the per-thread unread snapshot first so the markers draw correctly.
+    await refreshUnread()
     const [pub, self, reviews, mine, resolving] = await Promise.all([
       api.user(me.id),
       api.me(),
       api.userReviews(me.id),
       api.myGigs(),
       api.resolvingReviews(),
-      refreshUnread(), // refresh the per-thread unread snapshot before drawing markers
     ])
     const profile = { ...pub, ...self, average_rating: pub.average_rating }
     clear(root)
@@ -861,11 +862,12 @@ function messagesThread(g) {
     {
       class: 'btn-ghost',
       onClick: async () => {
-        const open = list.classList.toggle('hidden')
-        form.classList.toggle('hidden', open)
-        toggle.textContent = open ? label : 'Hide messages'
+        const closing = !list.classList.contains('hidden')
+        list.classList.toggle('hidden', closing)
+        form.classList.toggle('hidden', closing)
+        toggle.textContent = closing ? label : 'Hide messages'
         if (dot) dot.remove()
-        if (!open) {
+        if (!closing) {
           await loadThread()
           markThreadRead('gig', g.id)
         }
