@@ -149,6 +149,7 @@ export const api = {
 
   // Neighbors & connections (landscaper-to-landscaper networking)
   neighbors: () => request('/me/neighbors'),
+  searchUsers: (q) => request(`/users/search?q=${encodeURIComponent(q)}`),
   connections: () => request('/me/connections'),
   connect: (userId) => request(`/users/${userId}/connect`, { method: 'POST' }),
   acceptConnect: (userId) => request(`/users/${userId}/connect/accept`, { method: 'POST' }),

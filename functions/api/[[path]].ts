@@ -1621,6 +1621,37 @@ app.delete('/posts/:id/interest', async (c) => {
 
 /* ============================ PROFILES ============================ */
 
+// Find landscapers by name (or business name) — the discovery path for people
+// who aren't on your route. Same privacy rules as everywhere: excludes you,
+// closed accounts, and anyone on either side of a block; annotated with your
+// connection status so results get the same Connect / Pending / Message actions.
+// MUST be registered before '/users/:id' or ':id' captures "search".
+app.get('/users/search', async (c) => {
+  const userId = c.get('userId')
+  const q = (c.req.query('q') ?? '').trim()
+  if (q.length < 2) return c.json([])
+  // Escape LIKE wildcards in user input so they're matched literally.
+  const term = `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`
+  const rows = await c.env.DB.prepare(
+    `select id, display_name, verified from users
+      where deleted = 0 and id <> ?
+        and (display_name like ? escape '\\' or business_name like ? escape '\\')
+      order by display_name
+      limit 20`,
+  )
+    .bind(userId, term, term)
+    .all()
+  const found = rows.results as any[]
+  const blocked = await blockedSet(c.env.DB, userId)
+  const visible = found.filter((u) => !blocked.has(u.id))
+  const statuses = await connectionStatuses(
+    c.env.DB,
+    userId,
+    visible.map((u) => u.id),
+  )
+  return c.json(visible.map((u) => ({ ...u, connection: statuses.get(u.id) ?? 'none' })))
+})
+
 // Public columns only — never email or password_hash.
 app.get('/users/:id', async (c) => {
   const targetId = c.req.param('id')

@@ -282,6 +282,7 @@ describe('UI surface sweep (no 404/500 from any api.js route)', () => {
     // Neighbors & connections surface
     check('GET /me/neighbors', (await call('/me/neighbors', {}, a.token)).status)
     check('GET /me/connections', (await call('/me/connections', {}, a.token)).status)
+    check('GET /users/search', (await call('/users/search?q=zz', {}, a.token)).status)
     check(
       'POST /users/:id/connect',
       (await call(`/users/${b.id}/connect`, { method: 'POST' }, a.token)).status,
