@@ -152,6 +152,21 @@ create table if not exists review_messages (
 
 create index if not exists idx_review_messages_review on review_messages(review_id);
 
+-- PROPERTIES — places a user manages (a homeowner's house, a manager's units).
+-- Coordinates are PRIVATE: never returned for anyone but the owner. They power
+-- the derived "neighbor" tag on gigs/profiles (proximity only — no address,
+-- distance, or which-property is ever exposed to another user).
+create table if not exists properties (
+  id         text primary key,
+  owner_id   text not null references users(id) on delete cascade,
+  label      text not null,
+  lat        real not null,
+  lng        real not null,
+  created_at text not null default (datetime('now'))
+);
+
+create index if not exists idx_properties_owner on properties(owner_id);
+
 -- REPORTS — content/user reports, verification requests, and support tickets.
 create table if not exists reports (
   id          text primary key,

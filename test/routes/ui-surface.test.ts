@@ -266,6 +266,19 @@ describe('UI surface sweep (no 404/500 from any api.js route)', () => {
         )
       ).status,
     )
+    // Properties surface
+    const prop = await call(
+      '/me/properties',
+      { method: 'POST', body: JSON.stringify({ label: 'Sweep place', lat: 34.72, lng: -76.66 }) },
+      a.token,
+    )
+    check('POST /me/properties', prop.status)
+    check('GET /me/properties', (await call('/me/properties', {}, a.token)).status)
+    check(
+      'DELETE /me/properties/:id',
+      (await call(`/me/properties/${prop.body.id}`, { method: 'DELETE' }, a.token)).status,
+    )
+
     // Admin endpoints exist (403 for non-admins, never 404)
     check('GET /admin/reports', (await call('/admin/reports', {}, a.token)).status)
     check(

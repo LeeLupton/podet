@@ -4,6 +4,7 @@
 
 import { ApiError, api } from './api.js'
 import { getUser, logout } from './auth.js'
+import { requestGeolocation } from './location.js'
 import { renderRatePanel, renderReviewPanel } from './post.js'
 import {
   clear,
@@ -60,6 +61,7 @@ async function load(root) {
     root.append(moneyBlock(mine))
     root.append(notificationsBlock())
     root.append(businessBlock(profile))
+    root.append(propertiesBlock())
     root.append(changePasswordBlock())
     root.append(gigsBlock(mine, root))
     root.append(reviewsBlock(reviews, me.id))
@@ -103,11 +105,12 @@ function statsRow(avg, profile) {
         : 'no reviews yet',
     ),
     stat(String(profile.total_gigs), profile.total_gigs === 1 ? 'gig done' : 'gigs done'),
-    // Distinct reviewers — the hard-to-fake skill signal (sock puppets can't pad it).
+    // Distinct reviewers — the hard-to-fake skill signal (sock puppets can't pad
+    // it). Labeled "people" so it doesn't collide with the geographic neighbor tag.
     profile.distinct_counterparties
       ? stat(
           String(profile.distinct_counterparties),
-          profile.distinct_counterparties === 1 ? 'neighbor' : 'neighbors',
+          profile.distinct_counterparties === 1 ? 'person' : 'people',
         )
       : null,
   )
@@ -569,9 +572,14 @@ export async function openUserProfile(userId) {
     const avg = profile.average_rating != null ? profile.average_rating.toFixed(2) : '—'
     body.append(
       h(
-        'h2',
-        { class: 'me-name' },
-        (profile.display_name || 'Neighbor') + (profile.verified ? ' ✓' : ''),
+        'div',
+        { class: 'gig-row-top' },
+        h(
+          'h2',
+          { class: 'me-name' },
+          (profile.display_name || 'Neighbor') + (profile.verified ? ' ✓' : ''),
+        ),
+        profile.neighbor ? h('span', { class: 'pill pill-neighbor' }, 'neighbor') : null,
       ),
       profile.business_name
         ? h(
@@ -832,6 +840,146 @@ function businessBlock(profile) {
     name,
     save,
   )
+}
+
+/* --- Properties (power the "neighbor" tag) --- */
+
+function propertiesBlock() {
+  const wrap = h(
+    'div',
+    { class: 'me-section' },
+    h('h2', { class: 'section-title' }, 'Properties'),
+    h(
+      'p',
+      { class: 'hint' },
+      'Add places you manage. Gigs and people next to one of them are tagged “neighbor” so you can coordinate. Locations stay private — never shown to anyone else.',
+    ),
+  )
+  const list = h('div', { class: 'list' })
+  wrap.append(list)
+
+  async function loadList() {
+    try {
+      const props = await api.properties()
+      clear(list)
+      if (!props.length) {
+        list.append(h('div', { class: 'gig-meta' }, 'No properties yet.'))
+        return
+      }
+      for (const p of props) {
+        list.append(
+          h(
+            'div',
+            { class: 'card gig-row-top' },
+            h('span', {}, p.label),
+            h(
+              'button',
+              {
+                class: 'link-btn danger',
+                onClick: async () => {
+                  try {
+                    await api.deleteProperty(p.id)
+                    loadList()
+                  } catch (err) {
+                    toast(err instanceof ApiError ? err.message : 'Could not remove', 'error')
+                  }
+                },
+              },
+              'remove',
+            ),
+          ),
+        )
+      }
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Could not load properties', 'error')
+    }
+  }
+
+  const label = h('input', {
+    class: 'input',
+    type: 'text',
+    maxlength: '120',
+    placeholder: 'Label — e.g. 12 Oak St',
+  })
+  const lat = h('input', {
+    class: 'input',
+    type: 'number',
+    step: 'any',
+    min: '-90',
+    max: '90',
+    placeholder: 'Latitude',
+  })
+  const lng = h('input', {
+    class: 'input',
+    type: 'number',
+    step: 'any',
+    min: '-180',
+    max: '180',
+    placeholder: 'Longitude',
+  })
+  const locBtn = h(
+    'button',
+    {
+      type: 'button',
+      class: 'btn-ghost',
+      onClick: async () => {
+        locBtn.textContent = 'Locating…'
+        locBtn.disabled = true
+        try {
+          const c = await requestGeolocation()
+          lat.value = String(c.lat)
+          lng.value = String(c.lng)
+        } catch (err) {
+          toast(err.message, 'error')
+        } finally {
+          locBtn.textContent = 'Use my location'
+          locBtn.disabled = false
+        }
+      },
+    },
+    'Use my location',
+  )
+  const add = h('button', { class: 'btn-ghost', type: 'submit' }, 'Add property')
+  const form = h(
+    'form',
+    {
+      class: 'form',
+      onSubmit: async (e) => {
+        e.preventDefault()
+        const la = Number(lat.value)
+        const ln = Number(lng.value)
+        if (!label.value.trim()) return toast('Give the property a label', 'error')
+        if (
+          !Number.isFinite(la) ||
+          !Number.isFinite(ln) ||
+          la < -90 ||
+          la > 90 ||
+          ln < -180 ||
+          ln > 180
+        ) {
+          return toast('Set a valid location', 'error')
+        }
+        add.disabled = true
+        try {
+          await api.addProperty(label.value.trim(), la, ln)
+          label.value = ''
+          lat.value = ''
+          lng.value = ''
+          loadList()
+        } catch (err) {
+          toast(err instanceof ApiError ? err.message : 'Could not add property', 'error')
+        } finally {
+          add.disabled = false
+        }
+      },
+    },
+    label,
+    h('div', { class: 'loc-fields' }, locBtn, h('div', { class: 'row' }, lat, lng)),
+    add,
+  )
+  wrap.append(form)
+  loadList()
+  return wrap
 }
 
 /* --- Help & support --- */

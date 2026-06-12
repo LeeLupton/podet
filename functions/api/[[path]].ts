@@ -16,6 +16,7 @@ import { secureHeaders } from 'hono/secure-headers'
 
 import { bboxDeltas, haversineMiles } from '../lib/geo'
 import { parseGigInput } from '../lib/gig'
+import { type Point, pointNearAny, setsAdjacent } from '../lib/neighbor'
 import { clampLimit, parseBefore } from '../lib/pagination'
 import { DUMMY_PASSWORD_HASH, hashPassword, verifyPassword } from '../lib/password'
 import { MAX_PHOTOS_PER_GIG, checkImageUpload, photoKey } from '../lib/photos'
@@ -23,7 +24,7 @@ import { type PushDeliveryOptions, isAllowedPushEndpoint, sendWebPush, topicFor 
 import { rateLimitKey, windowStart } from '../lib/ratelimit'
 import { REVIEW, planReview, planRevision } from '../lib/review'
 import { validateSlot } from '../lib/schedule'
-import { LIMITS, isValidRating, validateString } from '../lib/validate'
+import { LIMITS, isValidLatLng, isValidRating, validateString } from '../lib/validate'
 
 type Env = {
   DB: D1Database
@@ -138,6 +139,16 @@ function fireAndForget(c: any, promise: Promise<unknown>): void {
     // no execution context (e.g. unit tests) — let it run detached
     void promise
   }
+}
+
+// A user's property coordinates (private — used only to derive neighbor tags,
+// never returned for anyone but the owner).
+async function loadPropertyPoints(db: D1Database, userId: string): Promise<Point[]> {
+  const res = await db
+    .prepare('select lat, lng from properties where owner_id = ? limit 200')
+    .bind(userId)
+    .all()
+  return (res.results as any[]).map((p) => ({ lat: p.lat, lng: p.lng }))
 }
 
 // Reputation accrues to the person a review is ABOUT, and only when the review
@@ -471,10 +482,18 @@ app.get('/gigs/near', async (c) => {
     .bind(lat - latDelta, lat + latDelta, lng - lngDelta, lng + lngDelta, new Date().toISOString())
     .all()
 
-  const blocked = await blockedSet(c.env.DB, c.get('userId'))
+  const [blocked, myProps] = await Promise.all([
+    blockedSet(c.env.DB, c.get('userId')),
+    loadPropertyPoints(c.env.DB, c.get('userId')),
+  ])
+  // "neighbor" = this gig sits next to one of YOUR properties (boolean only).
   const near = (rows.results as any[])
     .filter((g) => !blocked.has(g.posted_by))
-    .map((g) => ({ ...g, distance_mi: haversineMiles(lat, lng, g.lat, g.lng) }))
+    .map((g) => ({
+      ...g,
+      distance_mi: haversineMiles(lat, lng, g.lat, g.lng),
+      neighbor: pointNearAny(g.lat, g.lng, myProps) ? 1 : 0,
+    }))
     .filter((g) => g.distance_mi <= r)
     .sort((a, b) => a.distance_mi - b.distance_mi)
 
@@ -533,6 +552,8 @@ app.get('/gigs/:id', async (c) => {
   ) {
     return c.json({ error: 'not found' }, 404)
   }
+  const myProps = await loadPropertyPoints(c.env.DB, viewer)
+  gig.neighbor = pointNearAny(gig.lat, gig.lng, myProps) ? 1 : 0
   return c.json(gig)
 })
 
@@ -1606,6 +1627,16 @@ app.get('/users/:id', async (c) => {
   const hirer: any = (hirerRes.results as any[])[0]
   const distinct: any = (distinctRes.results as any[])[0]
   const blocked = (iBlockedRes.results as any[]).length > 0
+  // "Neighbor" — do you and they manage adjacent properties? Derived boolean only;
+  // never reveals either side's addresses, distance, or which property matched.
+  let neighbor = false
+  if (targetId !== callerId) {
+    const [mine, theirs] = await Promise.all([
+      loadPropertyPoints(c.env.DB, callerId),
+      loadPropertyPoints(c.env.DB, targetId),
+    ])
+    neighbor = mine.length > 0 && theirs.length > 0 && setsAdjacent(mine, theirs)
+  }
   return c.json({
     id: user.id,
     display_name: user.display_name,
@@ -1618,6 +1649,7 @@ app.get('/users/:id', async (c) => {
     gigs_posted: hirer?.posted ?? 0,
     gigs_paid: hirer?.paid ?? 0,
     i_blocked: blocked ? 1 : 0,
+    neighbor: neighbor ? 1 : 0,
     created_at: user.created_at,
   })
 })
@@ -1675,6 +1707,61 @@ app.get('/me/blocks', async (c) => {
     .bind(c.get('userId'))
     .all()
   return c.json(rows.results)
+})
+
+/* ============================ PROPERTIES ========================== */
+// Places a user manages. Coordinates are PRIVATE — only the owner ever reads
+// them back; everyone else only ever sees the derived "neighbor" boolean.
+const MAX_PROPERTIES = 50
+
+app.get('/me/properties', async (c) => {
+  const rows = await c.env.DB.prepare(
+    `select id, label, lat, lng, created_at from properties where owner_id = ? order by created_at desc`,
+  )
+    .bind(c.get('userId'))
+    .all()
+  return c.json(rows.results)
+})
+
+app.post('/me/properties', async (c) => {
+  if (!(await rateLimit(c, 'property-create', 20, 300))) {
+    return c.json({ error: 'too many properties — slow down' }, 429)
+  }
+  const userId = c.get('userId')
+  let b: any
+  try {
+    b = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid body' }, 400)
+  }
+  const labelCheck = validateString(b.label, LIMITS.area_label)
+  if (!labelCheck.ok || !labelCheck.value) return c.json({ error: 'label required' }, 400)
+  const lat = Number(b.lat)
+  const lng = Number(b.lng)
+  if (!isValidLatLng(lat, lng)) return c.json({ error: 'valid lat/lng required' }, 400)
+  const count: any = await c.env.DB.prepare(
+    'select count(*) as n from properties where owner_id = ?',
+  )
+    .bind(userId)
+    .first()
+  if ((count?.n ?? 0) >= MAX_PROPERTIES) {
+    return c.json({ error: `at most ${MAX_PROPERTIES} properties` }, 409)
+  }
+  const id = crypto.randomUUID()
+  await c.env.DB.prepare(
+    'insert into properties (id, owner_id, label, lat, lng) values (?, ?, ?, ?, ?)',
+  )
+    .bind(id, userId, labelCheck.value, lat, lng)
+    .run()
+  return c.json({ id }, 201)
+})
+
+app.delete('/me/properties/:id', async (c) => {
+  const res = await c.env.DB.prepare('delete from properties where id = ? and owner_id = ?')
+    .bind(c.req.param('id'), c.get('userId'))
+    .run()
+  if (res.meta.changes < 1) return c.json({ error: 'not found or not yours' }, 404)
+  return c.json({ ok: true })
 })
 
 app.get('/users/:id/reviews', async (c) => {

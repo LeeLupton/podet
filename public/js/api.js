@@ -141,6 +141,12 @@ export const api = {
   unblock: (userId) => request(`/users/${userId}/block`, { method: 'DELETE' }),
   blocks: () => request('/me/blocks'),
 
+  // Properties (private; power the derived "neighbor" tag)
+  properties: () => request('/me/properties'),
+  addProperty: (label, lat, lng) =>
+    request('/me/properties', { method: 'POST', body: { label, lat, lng } }),
+  deleteProperty: (id) => request(`/me/properties/${id}`, { method: 'DELETE' }),
+
   // Account
   deleteAccount: (password) => request('/me/delete', { method: 'POST', body: { password } }),
 

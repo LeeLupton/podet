@@ -284,6 +284,11 @@ textarea.input {
 .pill-completed {
   opacity: 0.6;
 }
+.pill-neighbor {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(124, 179, 66, 0.12);
+}
 
 /* Feed header / radius slider */
 .feed-header {
