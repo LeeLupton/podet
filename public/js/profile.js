@@ -632,6 +632,77 @@ export function nameLink(name, userId, verified = 0) {
   )
 }
 
+// The connect/message control(s) for a user, given your relationship. Re-renders
+// itself in place after an action (optimistic), so it's reusable in the profile
+// sheet and the search view. Returns the container element.
+export function connActionRow(userId, name, connection) {
+  const el = h('div', { class: 'post-actions conn-actions' })
+  function render(conn) {
+    clear(el)
+    const set = (...kids) => {
+      clear(el)
+      for (const k of kids) el.append(k)
+    }
+    if (conn === 'connected') {
+      set(h('button', { class: 'btn-ghost', onClick: () => openDmThread(userId, name) }, 'Message'))
+    } else if (conn === 'pending_out') {
+      set(
+        h(
+          'button',
+          {
+            class: 'link-btn',
+            onClick: async () => {
+              await api.disconnect(userId).catch(() => {})
+              render('none')
+            },
+          },
+          'Requested · cancel',
+        ),
+      )
+    } else if (conn === 'pending_in') {
+      set(
+        h(
+          'button',
+          {
+            class: 'btn-ghost on',
+            onClick: async () => {
+              try {
+                await api.acceptConnect(userId)
+                toast('Connected')
+                render('connected')
+              } catch (err) {
+                toast(err instanceof ApiError ? err.message : 'Could not accept', 'error')
+              }
+            },
+          },
+          'Accept request',
+        ),
+      )
+    } else {
+      set(
+        h(
+          'button',
+          {
+            class: 'btn-ghost',
+            onClick: async () => {
+              try {
+                const res = await api.connect(userId)
+                toast('Request sent')
+                render(res?.status === 'connected' ? 'connected' : 'pending_out')
+              } catch (err) {
+                toast(err instanceof ApiError ? err.message : 'Could not connect', 'error')
+              }
+            },
+          },
+          'Connect',
+        ),
+      )
+    }
+  }
+  render(connection || 'none')
+  return el
+}
+
 // Read-only portfolio sheet for any user (public columns only).
 export async function openUserProfile(userId) {
   const body = h('div', { class: 'sheet-body' }, spinner('Loading profile…'))
@@ -664,6 +735,7 @@ export async function openUserProfile(userId) {
         { class: 'gig-meta' },
         `As a hirer: ${profile.gigs_posted} posted · ${profile.gigs_paid} paid out`,
       ),
+      connActionRow(userId, profile.display_name || 'Neighbor', profile.connection),
       blockToggle(userId, profile.i_blocked),
       h('h3', { class: 'subhead' }, 'Reviews'),
     )
@@ -1061,7 +1133,7 @@ function propertiesBlock() {
 /* --- Neighbors & connections --- */
 
 // A direct-message thread with a connected user, in a sheet.
-function openDmThread(userId, name) {
+export function openDmThread(userId, name) {
   const body = h('div', { class: 'sheet-body' }, h('h2', { class: 'me-name' }, `Message ${name}`))
   const list = h('div', { class: 'comments' })
   const input = h('input', {
@@ -1131,7 +1203,6 @@ function neighborsBlock() {
       'Landscapers whose routes touch yours. Connect to coordinate, hand off, or cover each other.',
     ),
   )
-  const searchWrap = h('div', { class: 'list' })
   const requestsWrap = h('div', { class: 'list' })
   const nearWrap = h('div', { class: 'list' })
   const connectedWrap = h('div', { class: 'list' })
@@ -1148,8 +1219,7 @@ function neighborsBlock() {
     return h('button', { class: cls, onClick }, label)
   }
 
-  // The right action(s) for a user given your connection status — shared by the
-  // "near your route" list and search results so they behave identically.
+  // The right action(s) for a user given your connection status.
   function controlsFor(u) {
     if (u.connection === 'connected') {
       return [btn('Message', 'btn-ghost', () => openDmThread(u.id, u.display_name || 'Neighbor'))]
@@ -1187,55 +1257,6 @@ function neighborsBlock() {
       }),
     ]
   }
-
-  // Find landscapers by name — debounced; results reuse controlsFor.
-  const searchInput = h('input', {
-    class: 'input',
-    type: 'search',
-    maxlength: '60',
-    placeholder: 'Search landscapers by name…',
-    'aria-label': 'Search landscapers',
-  })
-  let searchTimer = null
-  async function runSearch() {
-    const q = searchInput.value.trim()
-    clear(searchWrap)
-    if (q.length < 2) return
-    try {
-      const found = await api.searchUsers(q)
-      clear(searchWrap)
-      if (!found.length) {
-        searchWrap.append(h('div', { class: 'gig-meta' }, `No landscapers matching “${q}”.`))
-        return
-      }
-      searchWrap.append(h('h3', { class: 'subhead' }, 'Search results'))
-      for (const u of found) searchWrap.append(row(u, ...controlsFor(u)))
-    } catch (err) {
-      clear(searchWrap)
-      searchWrap.append(
-        h(
-          'div',
-          { class: 'gig-meta warn-text' },
-          err instanceof ApiError ? err.message : 'Search failed',
-        ),
-      )
-    }
-  }
-  searchInput.addEventListener('input', () => {
-    clearTimeout(searchTimer)
-    searchTimer = setTimeout(runSearch, 300)
-  })
-  const searchForm = h(
-    'form',
-    {
-      onSubmit: (e) => {
-        e.preventDefault()
-        clearTimeout(searchTimer)
-        runSearch()
-      },
-    },
-    searchInput,
-  )
 
   async function reload() {
     try {
@@ -1304,7 +1325,7 @@ function neighborsBlock() {
       if (!conns.incoming.length && !toShow.length && !conns.connected.length) {
         nearWrap.append(
           emptyState(
-            'No neighbors yet — add the properties on your route to find landscapers nearby.',
+            'No connections yet — add the properties on your route to find neighbors, or use the Search tab to find anyone by name.',
           ),
         )
       }
@@ -1313,11 +1334,9 @@ function neighborsBlock() {
         errorState(err instanceof ApiError ? err.message : 'Could not load neighbors', reload),
       )
     }
-    // Keep any active search in sync with the new connection state.
-    if (searchInput.value.trim().length >= 2) runSearch()
   }
 
-  wrap.append(searchForm, searchWrap, requestsWrap, nearWrap, connectedWrap)
+  wrap.append(requestsWrap, nearWrap, connectedWrap)
   reload()
   return wrap
 }

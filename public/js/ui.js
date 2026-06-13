@@ -178,6 +178,23 @@ export function openImage(url) {
   )
 }
 
+// A deterministic initial-disc avatar. The colour comes from a fixed palette
+// chosen by a hash of the id (no inline styles — the strict CSP forbids them),
+// so the same person is always the same colour.
+const AVATAR_PALETTE = 12
+export function avatar(name, id, extraClass = '') {
+  const label = (name || '').trim()
+  const initial = label ? label.charAt(0).toUpperCase() : '?'
+  const seed = String(id || label)
+  let hash = 0
+  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
+  return h(
+    'span',
+    { class: `avatar av-${hash % AVATAR_PALETTE} ${extraClass}`.trim(), 'aria-hidden': 'true' },
+    initial,
+  )
+}
+
 // A read-only row of photo thumbnails; tap to view full size.
 export function photoStrip(photos, urlFor) {
   if (!photos || !photos.length) return null

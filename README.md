@@ -7,7 +7,7 @@
 #### The landscaper-to-landscaper network — routes, neighbors & restorative reviews, built end-to-end on Cloudflare.
 
 <p>
-  <img alt="tests" src="https://img.shields.io/badge/tests-269%20passing-3fb950?style=for-the-badge&logo=vitest&logoColor=white">
+  <img alt="tests" src="https://img.shields.io/badge/tests-270%20passing-3fb950?style=for-the-badge&logo=vitest&logoColor=white">
   <img alt="types" src="https://img.shields.io/badge/types-strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white">
   <img alt="lint" src="https://img.shields.io/badge/lint-Biome-60A5FA?style=for-the-badge&logo=biome&logoColor=white">
   <img alt="audit" src="https://img.shields.io/badge/prod%20deps-0%20vulns-3fb950?style=for-the-badge&logo=npm&logoColor=white">
@@ -184,10 +184,12 @@ D1 does not pause, so there is no keep-alive to run.
 
 ## Capabilities
 
-- **Find landscapers** — search the whole network by name (or business name) from the Me tab,
-  with the same Connect / Pending / Message actions as the neighbor list. Discovery isn't limited
-  to people on your route. Results follow the same privacy rules everywhere does (no closed
-  accounts, nothing across a block).
+- **Search tab** — a dedicated people finder: type a name (or business name) and get rich,
+  tappable results — avatar, name, verified check — that open the full profile sheet or act
+  inline (Connect / Requested / Accept / Message). An empty box suggests landscapers near your
+  route. Discovery isn't limited to people on your route, and results follow the same privacy
+  rules everywhere does (no closed accounts, nothing across a block). The profile sheet carries
+  the same Connect/Message actions, so you can go from a search hit straight into a DM.
 - **Routes, neighbors & connections (landscaper-to-landscaper)** — add the properties on
   your route. Other landscapers whose routes touch yours surface in a **neighbors list**;
   profiles show a public **neighbor count** (network density). From there you can send a

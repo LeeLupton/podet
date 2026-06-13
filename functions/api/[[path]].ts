@@ -1707,6 +1707,19 @@ app.get('/users/:id', async (c) => {
   }
   // Public network-density signal: how many other landscapers' routes touch theirs.
   const neighborCount = await countNeighbors(c.env.DB, targetId)
+  // Your connection relationship, so the profile sheet shows the right action.
+  let connection = 'none'
+  if (targetId !== callerId) {
+    const cx = await connectionBetween(c.env.DB, callerId, targetId)
+    if (cx) {
+      connection =
+        cx.status === 'ACCEPTED'
+          ? 'connected'
+          : cx.requester_id === callerId
+            ? 'pending_out'
+            : 'pending_in'
+    }
+  }
   return c.json({
     id: user.id,
     display_name: user.display_name,
@@ -1721,6 +1734,7 @@ app.get('/users/:id', async (c) => {
     i_blocked: blocked ? 1 : 0,
     neighbor: neighbor ? 1 : 0,
     neighbor_count: neighborCount,
+    connection,
     created_at: user.created_at,
   })
 })

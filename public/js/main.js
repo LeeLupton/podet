@@ -6,12 +6,14 @@ import { renderBoard, setOnTurnIntoGig } from './board.js'
 import { renderFeed, resetFeed, stopPolling } from './feed.js'
 import { renderPostForm, setOnPosted, setPrefill } from './post.js'
 import { renderProfile, setOnEditGig, setOnLoggedOut } from './profile.js'
+import { renderSearch } from './search.js'
 import { clear, h, toast } from './ui.js'
 import { mountUnreadBadge, refreshUnread, startUnreadPolling, stopUnreadPolling } from './unread.js'
 
 const VIEWS = {
   nearby: { el: () => document.getElementById('view-nearby'), render: renderFeed },
   board: { el: () => document.getElementById('view-board'), render: renderBoard },
+  search: { el: () => document.getElementById('view-search'), render: renderSearch },
   post: { el: () => document.getElementById('view-post'), render: renderPostForm },
   me: { el: () => document.getElementById('view-me'), render: renderProfile },
 }

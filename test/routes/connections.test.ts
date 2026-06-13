@@ -11,6 +11,20 @@ const accept = (token: string, id: string) =>
 const dm = (token: string, id: string, body: string) =>
   call(`/dms/${id}`, { method: 'POST', body: JSON.stringify({ body }) }, token)
 
+describe('profile connection status', () => {
+  it('GET /users/:id reports the connection relationship for the viewer', async () => {
+    const a = await register('A')
+    const b = await register('B')
+    expect((await call(`/users/${b.id}`, {}, a.token)).body.connection).toBe('none')
+    await connect(a.token, b.id)
+    expect((await call(`/users/${b.id}`, {}, a.token)).body.connection).toBe('pending_out')
+    expect((await call(`/users/${a.id}`, {}, b.token)).body.connection).toBe('pending_in')
+    await accept(b.token, a.id)
+    expect((await call(`/users/${b.id}`, {}, a.token)).body.connection).toBe('connected')
+    expect((await call(`/users/${a.id}`, {}, b.token)).body.connection).toBe('connected')
+  })
+})
+
 describe('connection lifecycle', () => {
   it('request → accept makes both sides connected', async () => {
     const a = await register('A')

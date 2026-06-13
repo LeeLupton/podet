@@ -739,6 +739,101 @@ textarea.input {
   text-align: center;
 }
 
+/* Avatars — deterministic initial discs (palette chosen by hash; no inline styles). */
+.avatar {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 17px;
+  color: #fff;
+  user-select: none;
+}
+.av-0 {
+  background: #4f7a25;
+}
+.av-1 {
+  background: #2563eb;
+}
+.av-2 {
+  background: #b45309;
+}
+.av-3 {
+  background: #9333ea;
+}
+.av-4 {
+  background: #0e7490;
+}
+.av-5 {
+  background: #be123c;
+}
+.av-6 {
+  background: #15803d;
+}
+.av-7 {
+  background: #7c3aed;
+}
+.av-8 {
+  background: #c2410c;
+}
+.av-9 {
+  background: #0369a1;
+}
+.av-10 {
+  background: #a16207;
+}
+.av-11 {
+  background: #db2777;
+}
+
+/* Search tab */
+.search-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg);
+  padding: 4px 0 12px;
+}
+.result-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.result-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  padding: 4px 0;
+  min-width: 0;
+}
+.result-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.result-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.result-sub {
+  font-size: 13px;
+  opacity: 0.7;
+}
+
 /* Settings */
 .settings-divider {
   margin-top: 10px;
